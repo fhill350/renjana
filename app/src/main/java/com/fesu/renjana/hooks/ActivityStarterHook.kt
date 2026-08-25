@@ -124,11 +124,19 @@ object ActivityStarterHook {
                 return false
             }
 
-        // Get the APK path for this instance
-        val apkPath = getApkPath(instanceId) ?: run {
-            RenjanaLog.e(TAG, "No APK path for instance $instanceId")
-            return false
-        }
+        val hostStub = findHostStub(callerActivity)
+
+        // Get the APK path for this app/instance
+        val apkPath = hostStub?.intent?.getStringExtra(StubActivity.EXTRA_APK_PATH)
+            ?: getApkPath(instanceId)
+            ?: run {
+                RenjanaLog.e(TAG, "No APK path for instance $instanceId")
+                return false
+            }
+        val targetPackage = hostStub?.intent?.getStringExtra(StubActivity.EXTRA_PACKAGE_NAME)
+            ?: targetComponent?.packageName
+            ?: packageCache[instanceId]
+        val targetAppName = hostStub?.intent?.getStringExtra(StubActivity.EXTRA_APP_NAME)
 
         // Determine launch mode from the guest Activity's manifest info
         val launchMode = resolveLaunchMode(instanceId, guestClassName)
@@ -140,7 +148,9 @@ object ActivityStarterHook {
             guestClass = guestClassName,
             guestIntent = originalIntent,
             apkPath = apkPath,
-            launchMode = launchMode
+            launchMode = launchMode,
+            targetPackageName = targetPackage,
+            targetAppName = targetAppName
         )
 
         if (stubIntent == null) {
@@ -255,25 +265,48 @@ object ActivityStarterHook {
                 return null
             }
 
-            // Not intercepted — delegate to the real Instrumentation
+            // Not intercepted — delegate to the real Instrumentation.
+            // execStartActivity is a hidden API: by-name getDeclaredMethod lookups
+            // are blocked on Android 15, so resolve the method by ENUMERATION.
             return try {
-                val method = delegate.javaClass.getDeclaredMethod(
-                    "execStartActivity",
-                    Context::class.java,
-                    android.os.IBinder::class.java,
-                    android.os.IBinder::class.java,
-                    Activity::class.java,
-                    Intent::class.java,
-                    Int::class.javaPrimitiveType,
-                    Bundle::class.java
-                )
-                method.isAccessible = true
-                method.invoke(delegate, who, contextThread, token, target, intent, requestCode, options)
-                        as? android.app.Instrumentation.ActivityResult
+                val method = findExecStartActivity(delegate.javaClass)
+                if (method == null) {
+                    RenjanaLog.e(TAG, "execStartActivity not found on delegate for passthrough")
+                    null
+                } else {
+                    method.invoke(delegate, *arrayOf<Any?>(who, contextThread, token, target, intent, requestCode, options).take(method.parameterCount).toTypedArray())
+                            as? android.app.Instrumentation.ActivityResult
+                }
             } catch (e: Exception) {
                 RenjanaLog.e(TAG, "Delegate execStartActivity failed: ${e.message}")
                 null
             }
+        }
+
+        /**
+         * Locate execStartActivity on the delegate's class hierarchy by walking
+         * declaredMethods (enumeration bypasses hidden-API lookup blocking) and
+         * matching name + parameter shape. Handles the 6/7-arg signature drift
+         * across API levels.
+         */
+        private fun findExecStartActivity(startClass: Class<*>): Method? {
+            var current: Class<*>? = startClass
+            while (current != null) {
+                try {
+                    val match = current.declaredMethods.firstOrNull { m ->
+                        m.name == "execStartActivity" &&
+                            m.parameterTypes.firstOrNull() == Context::class.java &&
+                            m.parameterTypes.contains(Intent::class.java) &&
+                            !java.lang.reflect.Modifier.isStatic(m.modifiers)
+                    }
+                    if (match != null) {
+                        match.isAccessible = true
+                        return match
+                    }
+                } catch (_: Throwable) {}
+                current = current.superclass
+            }
+            return null
         }
 
         /**

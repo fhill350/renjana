@@ -51,17 +51,97 @@
             android:process=":container"
             android:taskAffinity=":container" />
 
-        <!-- Stub Activities for guest app instances -->
-        <activity android:name=".core.StubActivity_0" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_1" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_2" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_3" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_4" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_5" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_6" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_7" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_8" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
-        <activity android:name=".core.StubActivity_9" android:exported="false" android:theme="@style/Theme.Renjana.Transparent" />
+        <!-- Stub Activities for isolated guest app instances in dedicated processes (:p0 - :p9) -->
+        <activity
+            android:name=".core.StubActivity_0"
+            android:exported="false"
+            android:process=":p0"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_1"
+            android:exported="false"
+            android:process=":p1"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_2"
+            android:exported="false"
+            android:process=":p2"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_3"
+            android:exported="false"
+            android:process=":p3"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_4"
+            android:exported="false"
+            android:process=":p4"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_5"
+            android:exported="false"
+            android:process=":p5"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_6"
+            android:exported="false"
+            android:process=":p6"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_7"
+            android:exported="false"
+            android:process=":p7"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_8"
+            android:exported="false"
+            android:process=":p8"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
+        <activity
+            android:name=".core.StubActivity_9"
+            android:exported="false"
+            android:process=":p9"
+            android:taskAffinity="com.fesu.renjana.guest"
+            android:theme="@style/Theme.Renjana.Stub"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|smallestScreenSize|uiMode|fontScale|locale|layoutDirection|density" />
 
         <!-- Shortcut trampoline: launched by homescreen pinned shortcuts, immediately forwards to the instance -->
         <activity

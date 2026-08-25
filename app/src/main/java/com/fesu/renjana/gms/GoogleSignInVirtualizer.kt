@@ -196,8 +196,73 @@ class GoogleSignInVirtualizer(
     }
     
     /**
+     * Record an organic Google sign-in completed inside a guest app.
+     *
+     * When a guest app signs in with a Google account, this upserts the account
+     * into the encrypted store (so it shows up in the Accounts screen), refreshes
+     * its stored ID token when a new one is captured, and auto-links the account
+     * to the instance when the instance has no account assigned yet.
+     *
+     * @return the stored [GoogleAccount], or null when persistence failed.
+     */
+    suspend fun captureSignedInAccount(
+        instanceId: String,
+        email: String,
+        displayName: String?,
+        photoUrl: String?,
+        idToken: String?
+    ): GoogleAccount? = withContext(Dispatchers.IO) {
+        try {
+            val existing = accountStore.getAccountByEmail(email)
+            val account = if (existing == null) {
+                val result = accountStore.addAccount(
+                    email = email,
+                    displayName = displayName ?: email.substringBefore('@'),
+                    photoUrl = photoUrl,
+                    idToken = idToken ?: "",
+                    accessToken = null,
+                    refreshToken = null,
+                    tokenExpiryTime = 0L
+                )
+                if (result.isFailure) {
+                    RenjanaLog.w(TAG, "Captured sign-in could not be stored: ${result.exceptionOrNull()?.message}")
+                    return@withContext null
+                }
+                result.getOrThrow()
+            } else if (!idToken.isNullOrBlank() && idToken != existing.idToken) {
+                accountStore.updateTokens(existing.id, idToken, existing.accessToken, 0L)
+                existing.copy(idToken = idToken)
+            } else {
+                existing
+            }
+
+            // Auto-link when the instance has no account assigned yet
+            if (instanceAccountMap[instanceId] == null) {
+                instanceAccountMap[instanceId] = account
+                virtualAccountCache.remove(instanceId)
+                try {
+                    val app = RenjanaApplication.get()
+                    val inst = app.instanceManager.getInstanceById(instanceId)
+                    if (inst != null && inst.accountId == null) {
+                        app.instanceManager.assignAccount(instanceId, account.id)
+                        CoreHooks.virtualAccounts[inst.packageName] = account
+                    }
+                } catch (e: Exception) {
+                    RenjanaLog.w(TAG, "Auto-link of captured account failed: ${e.message}")
+                }
+            }
+
+            RenjanaLog.i(TAG, "Captured Google sign-in: $email (instance=$instanceId)")
+            account
+        } catch (e: Exception) {
+            RenjanaLog.e(TAG, "captureSignedInAccount failed", e)
+            null
+        }
+    }
+
+    /**
      * Remove account assignment from an instance (sign-out).
-     * 
+     *
      * @param instanceId Unique identifier of the container instance
      */
     fun removeAccountFromInstance(instanceId: String) {
@@ -569,10 +634,14 @@ class GoogleSignInVirtualizer(
                 
                 // Try to refresh tokens
                 val refreshedAccount = tokenManager.refreshTokens(account)
-                
+
                 if (refreshedAccount == null) {
-                    RenjanaLog.w(TAG, "Token refresh failed for instance $instanceId")
-                    return@withContext null
+                    // Renjana's own OAuth client credentials are not configured, so
+                    // refreshing is impossible. Serve the stored token best-effort
+                    // instead of hard-failing the guest's silent sign-in — the guest's
+                    // backend is the real audience for the token anyway.
+                    RenjanaLog.w(TAG, "Token refresh unavailable; serving stored token best-effort for instance $instanceId")
+                    return@withContext account
                 }
                 
                 // Update stored account

@@ -48,6 +48,13 @@ val StatusPaused = Color(0xFFFF9500)
 val StatusError = Color(0xFFFF3B30)
 val StatusIdle = Color(0xFF8E8E93)
 
+// ── Stealth Container Semantic Colors ────────────────────────
+val ContainerBoundary = Color(0xFF38BDF8)
+val IsolationActive = Color(0xFF22D3EE)
+val RiskWarning = Color(0xFFF59E0B)
+val FingerprintSignal = Color(0xFF14B8A6)
+val InstanceBadge = Color(0xFF64748B)
+
 // ── Accent Presets (untuk Settings color picker) ─────────────
 val AccentBlue = Color(0xFF0066FF)
 val AccentPurple = Color(0xFF8B5CF6)

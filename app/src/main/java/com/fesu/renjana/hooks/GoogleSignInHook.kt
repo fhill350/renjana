@@ -331,6 +331,11 @@ object GoogleSignInHook {
                         val resolvedInstanceId = CoreHooks.currentInstanceId.get() ?: return
                         val intent = param.args[0] as? Intent ?: return
 
+                        // Record organic sign-ins before any replacement: if the guest
+                        // completed a REAL Google sign-in, the original result carries
+                        // the account — capture it so it appears in the Accounts screen.
+                        captureGuestSignInAccount(param.result, resolvedInstanceId)
+
                         isInHook.set(true)
                         try {
                             // Extract selected account ID from intent extras
@@ -584,6 +589,9 @@ object GoogleSignInHook {
                         val resolvedInstanceId = CoreHooks.currentInstanceId.get() ?: return
                         val request = param.args[1] ?: return
 
+                        // Capture organic Credential Manager sign-ins (Android 14+)
+                        captureGuestSignInAccount(param.result, resolvedInstanceId)
+
                         isInHook.set(true)
                         try {
                             // Check if request contains Google credential options
@@ -778,6 +786,104 @@ object GoogleSignInHook {
     }
 
     // ==================== Utility Methods ====================
+
+    /** Fields extracted from a guest-completed Google sign-in result. */
+    private class CapturedSignIn(
+        val email: String,
+        val displayName: String?,
+        val photoUrl: String?,
+        val idToken: String?
+    )
+
+    /**
+     * Record a guest-completed Google sign-in into the encrypted account store and
+     * auto-link it to the instance. Runs on a background thread — persistence must
+     * not delay delivering the sign-in result to the guest.
+     */
+    private fun captureGuestSignInAccount(result: Any?, instanceId: String) {
+        if (result == null) return
+        val virt = virtualizer ?: return
+        val captured = extractSignInFields(result) ?: return
+        Thread {
+            try {
+                runBlocking {
+                    virt.captureSignedInAccount(
+                        instanceId = instanceId,
+                        email = captured.email,
+                        displayName = captured.displayName,
+                        photoUrl = captured.photoUrl,
+                        idToken = captured.idToken
+                    )
+                }
+            } catch (e: Throwable) {
+                RenjanaLog.w(TAG, "Sign-in capture failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    /**
+     * Extract email/name/photo/idToken from a sign-in result object. Handles both
+     * GoogleSignInAccount (getEmail/getIdToken/...) and Credential Manager results
+     * (GetCredentialResponse → GoogleIdTokenCredential, whose getId() IS the raw
+     * JWT). Falls back to parsing the JWT payload for the email claim.
+     */
+    private fun extractSignInFields(result: Any): CapturedSignIn? {
+        return try {
+            fun str(target: Any, method: String): String? = try {
+                target.javaClass.getMethod(method).invoke(target) as? String
+            } catch (_: Throwable) { null }
+            fun any(target: Any, method: String): Any? = try {
+                target.javaClass.getMethod(method).invoke(target)
+            } catch (_: Throwable) { null }
+
+            // Credential Manager path: unwrap GetCredentialResponse → credential
+            val target = any(result, "getCredential") ?: result
+
+            var email = str(target, "getEmail")
+            var idToken = str(target, "getIdToken")
+            val displayName = str(target, "getDisplayName")
+            var photoUrl = try {
+                target.javaClass.getMethod("getPhotoUrl").invoke(target)?.toString()
+            } catch (_: Throwable) { null }
+
+            // GoogleIdTokenCredential exposes the raw token via getId()
+            if (email.isNullOrBlank() && idToken.isNullOrBlank()) {
+                val token = str(target, "getId")
+                if (token != null && token.count { it == '.' } == 2) {
+                    idToken = token
+                }
+            }
+
+            if (email.isNullOrBlank() && !idToken.isNullOrBlank()) {
+                email = jwtClaim(idToken, "email")
+                photoUrl = photoUrl ?: jwtClaim(idToken, "picture")
+            }
+
+            if (email.isNullOrBlank()) null
+            else CapturedSignIn(email, displayName, photoUrl, idToken)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** Read a claim out of a JWT's payload segment (base64url, no signature check). */
+    private fun jwtClaim(jwt: String?, claim: String): String? {
+        if (jwt == null) return null
+        return try {
+            val parts = jwt.split(".")
+            if (parts.size != 3) return null
+            val payload = String(
+                android.util.Base64.decode(
+                    parts[1],
+                    android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP
+                )
+            )
+            val json = org.json.JSONObject(payload)
+            (json.opt(claim) as? String)
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     /**
      * Uninstall all hooks (for cleanup).

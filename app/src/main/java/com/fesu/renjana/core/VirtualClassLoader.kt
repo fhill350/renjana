@@ -16,6 +16,8 @@ class VirtualClassLoader(
     private val apkPath: String,
     private val instanceId: String,
     private val optimizedDir: File,
+    private val guestPackageName: String? = null,
+    private val nativeLibDir: String? = null,
     parent: ClassLoader? = null
 ) : ClassLoader(parent ?: ClassLoader.getSystemClassLoader()) {
 
@@ -23,20 +25,69 @@ class VirtualClassLoader(
     private var resources: Resources? = null
     private var assetManager: AssetManager? = null
 
+    companion object {
+        fun resolveAllApkPaths(apkPath: String): List<String> {
+            val paths = mutableListOf<String>()
+            val mainFile = File(apkPath)
+            if (mainFile.exists()) {
+                paths.add(mainFile.absolutePath)
+                val parentDir = mainFile.parentFile
+                if (parentDir != null && parentDir.exists() && parentDir.isDirectory) {
+                    parentDir.listFiles { file ->
+                        file.isFile && file.name.endsWith(".apk") && file.absolutePath != mainFile.absolutePath
+                    }?.forEach { split ->
+                        paths.add(split.absolutePath)
+                    }
+                }
+            } else {
+                paths.add(apkPath)
+            }
+            return paths.distinct()
+        }
+    }
+
+    private val allApkPaths: List<String> = resolveAllApkPaths(apkPath)
+
     init {
         // Create optimized directory for this instance
         if (!optimizedDir.exists()) {
             optimizedDir.mkdirs()
         }
 
-        // Initialize DexClassLoader with the APK path
-        // This will extract and optimize DEX files
+        // Initialize DexClassLoader with all APK paths (base + splits).
+        //
+        // CRITICAL: the DexClassLoader's parent must be the BOOT classloader
+        // (framework classes only), NOT the host app loader. DexClassLoader uses
+        // parent-first delegation, so a host parent makes every guest reference to
+        // an app-level library (gson, androidx, kotlin-stdlib) resolve to
+        // RENJANA'S copy — which is R8-obfuscated in release builds, producing
+        // NoSuchMethodError ("No virtual method a() GsonBuilder") inside guest
+        // Application/providers. With the boot parent, guests always use their own
+        // bundled copies; the host fallback below stays available only through
+        // VirtualClassLoader.loadClass's explicit last resort.
+        //
+        // Native libs: the guest's .so files live inside the APKs
+        // (split_config.arm64_v8a.apk!/lib/arm64-v8a) or in the installed
+        // nativeLibraryDir. DexClassLoader does NOT search APK lib dirs on its
+        // own — without an explicit library path, guest Application constructors
+        // calling System.loadLibrary() die with UnsatisfiedLinkError
+        // (e.g. Cloudflare's libwarp_mobile.so).
+        val combinedDexPath = allApkPaths.joinToString(File.pathSeparator)
+        val libSearchPath = (listOfNotNull(nativeLibDir) + allApkPaths)
+            .joinToString(File.pathSeparator)
         dexClassLoader = DexClassLoader(
-            apkPath,
+            combinedDexPath,
             optimizedDir.absolutePath,
-            null, // library path - will be set later if needed
-            parent ?: ClassLoader.getSystemClassLoader()
+            libSearchPath,
+            frameworkOnlyParent()
         )
+    }
+
+    /** Framework-only parent (BootClassLoader) so guests never see host app classes. */
+    private fun frameworkOnlyParent(): ClassLoader = try {
+        ClassLoader.getSystemClassLoader().parent ?: ClassLoader.getSystemClassLoader()
+    } catch (_: Throwable) {
+        ClassLoader.getSystemClassLoader()
     }
 
     /**
@@ -85,7 +136,11 @@ class VirtualClassLoader(
      */
     fun getAssets(): AssetManager {
         if (assetManager == null) {
-            assetManager = createAssetManager()
+            if (resources != null) {
+                assetManager = resources!!.assets
+            } else {
+                assetManager = createAssetManager()
+            }
         }
         return assetManager!!
     }
@@ -105,10 +160,13 @@ class VirtualClassLoader(
                 String::class.java
             )
             addAssetPathMethod.isAccessible = true
-            val result = addAssetPathMethod.invoke(assetManager, apkPath) as Int
-            
-            if (result == 0) {
-                throw RuntimeException("Failed to add asset path: $apkPath")
+            for (path in allApkPaths) {
+                try {
+                    val result = addAssetPathMethod.invoke(assetManager, path) as? Int
+                    com.fesu.renjana.utils.RenjanaLog.i("VirtualClassLoader", "Added asset path: $path (cookie=$result)")
+                } catch (e: Exception) {
+                    com.fesu.renjana.utils.RenjanaLog.w("VirtualClassLoader", "Failed to add asset path $path: ${e.message}")
+                }
             }
             
             return assetManager
@@ -118,18 +176,51 @@ class VirtualClassLoader(
     }
 
     /**
-     * Create Resources for the guest APK
+     * Create Resources for the guest APK using PackageManager where available,
+     * ensuring all splits and framework assets are properly linked.
      */
     private fun createResources(context: android.content.Context): Resources {
+        try {
+            val pm = context.packageManager
+            val targetPkg = guestPackageName ?: try {
+                pm.getPackageArchiveInfo(apkPath, 0)?.packageName
+            } catch (_: Throwable) { null }
+
+            if (!targetPkg.isNullOrEmpty()) {
+                try {
+                    val appRes = pm.getResourcesForApplication(targetPkg)
+                    com.fesu.renjana.utils.RenjanaLog.i("VirtualClassLoader", "Loaded Resources via PackageManager for $targetPkg")
+                    return appRes
+                } catch (e: Throwable) {
+                    com.fesu.renjana.utils.RenjanaLog.w("VirtualClassLoader", "Failed to get Resources for $targetPkg via PM: ${e.message}")
+                }
+            }
+
+            val pkgInfo = pm.getPackageArchiveInfo(apkPath, 0)
+            if (pkgInfo?.applicationInfo != null) {
+                val ai = pkgInfo.applicationInfo
+                ai.sourceDir = apkPath
+                ai.publicSourceDir = apkPath
+                val splits = allApkPaths.filter { it != apkPath }.toTypedArray()
+                if (splits.isNotEmpty()) {
+                    ai.splitSourceDirs = splits
+                    ai.splitPublicSourceDirs = splits
+                }
+                val appRes = pm.getResourcesForApplication(ai)
+                com.fesu.renjana.utils.RenjanaLog.i("VirtualClassLoader", "Loaded Resources via ApplicationInfo archive for $apkPath")
+                return appRes
+            }
+        } catch (e: Throwable) {
+            com.fesu.renjana.utils.RenjanaLog.w("VirtualClassLoader", "PackageManager getResources fallback to AssetManager: ${e.message}")
+        }
+
         val assets = getAssets()
-        // Use Resources.getSystem() to avoid infinite recursion:
-        // WrapperActivity.getResources() -> VirtualClassLoader.getResources(context)
-        // -> createResources(context) -> context.resources -> WrapperActivity.getResources() ...
-        val systemRes = Resources.getSystem()
+        val appRes = context.applicationContext?.resources ?: Resources.getSystem()
+        @Suppress("DEPRECATION")
         return Resources(
             assets,
-            systemRes.displayMetrics,
-            systemRes.configuration
+            appRes.displayMetrics,
+            appRes.configuration
         )
     }
 

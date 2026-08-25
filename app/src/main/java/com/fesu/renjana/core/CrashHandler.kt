@@ -76,8 +76,33 @@ class CrashHandler(
             RenjanaLog.e(TAG, "Failed to write crash log", writeError)
         }
 
+        if (isStubProcess()) {
+            // Guest stub processes (:p0-:p9) die quietly. Chaining to the default
+            // handler would surface the system force-close dialog ("Renjana keeps
+            // stopping") every time a guest app crashes — the crash log above is
+            // preserved and shown via the in-app CrashScreen on next open instead.
+            RenjanaLog.w(TAG, "Stub process crash — exiting quietly (no force-close dialog)")
+            android.os.Process.killProcess(android.os.Process.myPid())
+            kotlin.system.exitProcess(10)
+        }
+
         // Call default handler to let the process die normally
         defaultHandler?.uncaughtException(t, e)
+    }
+
+    /**
+     * True when running inside a guest stub process (:p0-:p9). Such processes host
+     * third-party guest code whose crashes must not spam the system crash dialog.
+     */
+    private fun isStubProcess(): Boolean {
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            val myPid = android.os.Process.myPid()
+            val name = am?.runningAppProcesses?.firstOrNull { it.pid == myPid }?.processName
+            name != null && Regex(":p\\d+$").containsMatchIn(name)
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun writeCrashLog(thread: Thread, throwable: Throwable) {

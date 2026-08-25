@@ -141,8 +141,8 @@ fun CreateInstanceScreen(
             ) {
                 Column {
                     ConfigToggleRow(
-                        title = "Google Services (GMS)",
-                        subtitle = "Intercept Google Sign-In, Firebase, Play Billing",
+                        title = "Google services (GMS)",
+                        subtitle = "Support Google Sign-In, Firebase, and Play Billing",
                         checked = enableGms,
                         onCheckedChange = { viewModel.updateEnableGms(it) }
                     )
@@ -162,8 +162,8 @@ fun CreateInstanceScreen(
                     )
                     Divider()
                     ConfigToggleRow(
-                        title = "Fingerprint Spoofing",
-                        subtitle = "Randomize device fingerprint",
+                        title = "Device fingerprint spoofing",
+                        subtitle = "Randomize device identity signals",
                         checked = enableFingerprint,
                         onCheckedChange = { viewModel.updateEnableFingerprint(it) }
                     )
@@ -184,6 +184,8 @@ fun CreateInstanceScreen(
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.onPrimary
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Creating…")
                 } else {
                     Text("Create Instance")
                 }
@@ -301,8 +303,8 @@ fun CreateInstanceSheetContent(
         ) {
             Column {
                 ConfigToggleRow(
-                    title = "Enable GMS",
-                    subtitle = "Google Mobile Services support",
+                    title = "Google Mobile Services (GMS)",
+                    subtitle = "Support Google Sign-In, Firebase, and Play Billing",
                     checked = enableGms,
                     onCheckedChange = { viewModel.updateEnableGms(it) }
                 )
@@ -322,8 +324,8 @@ fun CreateInstanceSheetContent(
                 )
                 Divider()
                 ConfigToggleRow(
-                    title = "Spoof Fingerprint",
-                    subtitle = "Randomize device fingerprint",
+                    title = "Device Fingerprint Spoofing",
+                    subtitle = "Randomize device identity signals",
                     checked = enableFingerprint,
                     onCheckedChange = { viewModel.updateEnableFingerprint(it) }
                 )
@@ -348,6 +350,7 @@ fun CreateInstanceSheetContent(
         }
 
         // Bottom spacing for navigation bar
+        Spacer(modifier = Modifier.height(24.dp))
         Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
     }
 }

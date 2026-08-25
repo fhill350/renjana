@@ -19,39 +19,30 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Core hook definitions shared by both Xposed (root) and Pine (non-root) modes.
- *
- * Each hook is implemented as an XC_MethodHook that can be directly used by Xposed
- * and adapted for Pine. Hooks are categorized by what they intercept:
- *
- * 1. ActivityThread hooks - intercept Activity lifecycle
- * 2. PackageManager hooks - spoof signatures and package info
- * 3. Google Sign-In hooks - return virtualized accounts
- * 4. Context hooks - redirect SharedPreferences to virtual paths
- * 5. File hooks - redirect file operations to virtual filesystem
- * 6. Detection evasion hooks - File.exists(), Build properties, System.getProperty()
  */
 object CoreHooks {
     private const val TAG = "CoreHooks"
 
     /**
      * ThreadLocal tracking which container instance is active on the current thread.
-     *
-     * This is only a fast-path HINT. Hooks primarily fire on binder threads where this
-     * ThreadLocal is unset, so [classLoaderToInstanceId] is the PRIMARY lookup mechanism.
-     * Use [getCurrentInstanceId] which consults the map first and falls back to this.
      */
     val currentInstanceId = ThreadLocal<String?>()
 
     /**
      * PRIMARY instance lookup: maps the guest [ClassLoader] to its instance ID.
-     *
-     * Pine hooks fire on arbitrary binder threads where [currentInstanceId] (a
-     * ThreadLocal) is unset, causing hooks to silently pass-through. The guest
-     * ClassLoader is stable across threads for a given instance, so we key off it.
-     * Populated by [PineHookManager.installGuestHooks] and looked up via
-     * [getCurrentInstanceId].
      */
     val classLoaderToInstanceId = ConcurrentHashMap<ClassLoader, String>()
+
+    /**
+     * Reentrancy guard for File constructor and exists hooks to prevent infinite recursion.
+     */
+    private val isInsideFileHook = ThreadLocal.withInitial { false }
+
+    /**
+     * Process-wide instance ID for isolated subprocesses (:p0..:p9).
+     */
+    @Volatile
+    var processInstanceId: String? = null
 
     /**
      * Maps package names to their virtual data paths.
@@ -84,13 +75,6 @@ object CoreHooks {
 
     /**
      * Hook ActivityThread.handleLaunchActivity() to intercept Activity creation.
-     *
-     * This is the core hook that allows the container to:
-     * - Set the correct class loader for the guest app
-     * - Inject the virtual context before Activity.onCreate()
-     * - Track which instance is active
-     *
-     * Target: android.app.ActivityThread.handleLaunchActivity(IBinder r, List pendingResults)
      */
     fun createActivityThreadHook(): XC_MethodHook {
         return object : XC_MethodHook() {
@@ -222,7 +206,81 @@ object CoreHooks {
         }
     }
 
+    /**
+     * Hook ContextImpl.bindService* to block connections to Google Play Services
+     * when the instance runs with GMS virtualization disabled.
+     *
+     * The GMS broker validates client package ownership REMOTELY (in the GMS
+     * process, against the calling UID) — unreachable for in-process hooks. If we
+     * let the bind through, the guest's GMS client eventually receives a
+     * `SecurityException: Unknown calling package name` from the broker, which
+     * kills the process when delivered on the measurement module's main-thread
+     * handler. Blocking the bind up front reproduces the de-Googled-device
+     * experience: GMS clients see a connection failure they already know how to
+     * handle gracefully, and Firebase falls back to its direct-HTTPS paths.
+     */
+    fun createBindServiceGmsBlockHook(): XC_MethodHook {
+        return object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                try {
+                    val intent = param.args.filterIsInstance<Intent>().firstOrNull() ?: return
+                    val targetPkg = intent.component?.packageName ?: intent.`package` ?: return
+                    if (targetPkg == "com.google.android.gms" || targetPkg == "com.android.vending") {
+                        param.result = false
+                        RenjanaLog.d(TAG, "Blocked GMS bindService: ${intent.component?.className ?: intent.action}")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     // ==================== 2. PackageManager Hooks ====================
+
+    /**
+     * Hook ApplicationPackageManager.getApplicationInfo() to spoof the uid.
+     *
+     * GMS client libraries loaded in-process (Firebase measurement dynamite,
+     * etc.) validate that the calling package is owned by the calling UID and
+     * otherwise throw `SecurityException: Unknown calling package name '<pkg>'`.
+     * Inside the container the process UID is Renjana's while the guest claims
+     * its own package — report the guest's ApplicationInfo with OUR uid so the
+     * ownership check passes.
+     */
+    fun createGetApplicationInfoHook(): XC_MethodHook {
+        return object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                try {
+                    val packageName = param.args[0] as? String ?: return
+                    if (!packageDataPaths.containsKey(packageName)) return
+                    val appInfo = param.result as? android.content.pm.ApplicationInfo ?: return
+                    val myUid = android.os.Process.myUid()
+                    if (appInfo.uid != myUid) {
+                        appInfo.uid = myUid
+                        RenjanaLog.d(TAG, "Spoofed ApplicationInfo.uid=$myUid for $packageName (GMS client check)")
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /**
+     * Hook ApplicationPackageManager.getPackagesForUid() to include guest
+     * packages. Complements [createGetApplicationInfoHook] for GMS paths that
+     * validate ownership by listing the packages sharing the calling UID.
+     */
+    fun createGetPackagesForUidHook(): XC_MethodHook {
+        return object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                try {
+                    val current = param.result as? Array<String> ?: return
+                    val extras = packageDataPaths.keys.filter { it !in current }
+                    if (extras.isEmpty()) return
+                    param.result = current + extras
+                    RenjanaLog.d(TAG, "Appended guest packages to getPackagesForUid: $extras")
+                } catch (_: Exception) {}
+            }
+        }
+    }
 
     /**
      * Hook ApplicationPackageManager.getPackageInfo() to spoof signatures.
@@ -505,11 +563,13 @@ object CoreHooks {
     fun createFileConstructorHook(): XC_MethodHook {
         return object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
+                if (isInsideFileHook.get() == true) return
+                isInsideFileHook.set(true)
                 try {
                     val file = param.thisObject as? File ?: return
                     // File is a system class — its ClassLoader is bootstrap, not the guest's.
-                    // Fall back to the ThreadLocal hint (File ops run on guest-owned threads).
-                    val instanceId = getCurrentInstanceId(null) ?: return
+                    // Fall back to the ThreadLocal/process hint (File ops run on guest-owned threads).
+                    val instanceId = getCurrentInstanceId() ?: return
                     val originalPath = file.absolutePath
 
                     // Find the requesting package
@@ -550,6 +610,8 @@ object CoreHooks {
                     }
                 } catch (e: Exception) {
                     RenjanaLog.e(TAG, "Error in File(String).afterHook: ${e.message}")
+                } finally {
+                    isInsideFileHook.set(false)
                 }
             }
         }
@@ -561,10 +623,11 @@ object CoreHooks {
     fun createFileConstructor2Hook(): XC_MethodHook {
         return object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
+                if (isInsideFileHook.get() == true) return
+                isInsideFileHook.set(true)
                 try {
                     val file = param.thisObject as? File ?: return
-                    // File is a system class — fall back to the ThreadLocal hint.
-                    val instanceId = getCurrentInstanceId(null) ?: return
+                    val instanceId = getCurrentInstanceId() ?: return
                     val originalPath = file.absolutePath
 
                     val requestingPackage = findRequestingPackage() ?: return
@@ -598,6 +661,8 @@ object CoreHooks {
                     }
                 } catch (e: Exception) {
                     RenjanaLog.e(TAG, "Error in File(String,String).afterHook: ${e.message}")
+                } finally {
+                    isInsideFileHook.set(false)
                 }
             }
         }
@@ -611,6 +676,8 @@ object CoreHooks {
     fun createFileExistsHook(): XC_MethodHook {
         return object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
+                if (isInsideFileHook.get() == true) return
+                isInsideFileHook.set(true)
                 try {
                     val file = param.thisObject as? File ?: return
                     val path = file.absolutePath
@@ -621,6 +688,8 @@ object CoreHooks {
                     }
                 } catch (e: Exception) {
                     RenjanaLog.e(TAG, "Error in File.exists().afterHook: ${e.message}")
+                } finally {
+                    isInsideFileHook.set(false)
                 }
             }
         }
@@ -809,6 +878,7 @@ object CoreHooks {
     fun registerPackage(packageName: String, dataPath: String, instanceId: String) {
         packageDataPaths[packageName] = dataPath
         hookedPackages[packageName] = true
+        processInstanceId = instanceId
         RenjanaLog.i(TAG, "Registered package $packageName for instance $instanceId")
     }
 
@@ -818,6 +888,7 @@ object CoreHooks {
      */
     fun registerInstanceConfig(instanceId: String, config: InstanceConfig) {
         instanceConfigs[instanceId] = config
+        processInstanceId = instanceId
         RenjanaLog.d(TAG, "Registered instance config for $instanceId (fingerprint=${config.enableFingerprint})")
     }
 
@@ -858,18 +929,16 @@ object CoreHooks {
      * (`thisObject?.javaClass?.classLoader`) or from the hooked method's declaring
      * class (`param.method.declaringClass?.classLoader`).
      *
-     * Fallback: [currentInstanceId] ThreadLocal — a fast-path hint set on the
-     * installer/main thread. Used when no ClassLoader is available (e.g. hooks on
-     * `java.io.File` constructors, where `thisObject` is a system class).
+     * Fallback: [currentInstanceId] ThreadLocal -> [processInstanceId] -> single-element map.
      *
      * @param classLoader The guest ClassLoader, or null if not extractable.
      * @return The instance ID, or null if not found (the hook should pass through).
      */
-    fun getCurrentInstanceId(classLoader: ClassLoader?): String? {
+    fun getCurrentInstanceId(classLoader: ClassLoader? = null): String? {
         if (classLoader != null) {
             classLoaderToInstanceId[classLoader]?.let { return it }
         }
-        return currentInstanceId.get()
+        return currentInstanceId.get() ?: processInstanceId ?: if (classLoaderToInstanceId.size == 1) classLoaderToInstanceId.values.firstOrNull() else null
     }
 
     /**
@@ -905,20 +974,15 @@ object CoreHooks {
     }
 
     /**
-     * Find the package name of the code calling the current hook.
-     * Uses stack trace analysis to identify the guest app.
+     * Find the package name registered for the current hook's instance.
+     * Resolves the instance once (ThreadLocal → process-wide → single guest),
+     * then returns the package whose registered data path belongs to it.
      */
     private fun findRequestingPackage(): String? {
-        val stackTrace = Thread.currentThread().stackTrace
-        for (element in stackTrace) {
-            val instanceId = currentInstanceId.get()
-            if (instanceId != null) {
-                // Find which registered package matches the current instance
-                for ((pkg, path) in packageDataPaths) {
-                    if (path.contains(instanceId)) {
-                        return pkg
-                    }
-                }
+        val instanceId = getCurrentInstanceId() ?: return null
+        for ((pkg, path) in packageDataPaths) {
+            if (path.contains(instanceId)) {
+                return pkg
             }
         }
         return null
@@ -1100,9 +1164,9 @@ object CoreHooks {
                     val key = param.args[1] as? String ?: return
                     if (key != "android_id") return
 
-                    // Use declaring class classloader as PRIMARY lookup; fall back to ThreadLocal.
                     val instanceId = getCurrentInstanceId(
-                        param.method.declaringClass?.classLoader
+                        param.thisObject?.javaClass?.classLoader
+                            ?: param.method.declaringClass?.classLoader
                     ) ?: return
 
                     val config = instanceConfigs[instanceId]
@@ -1137,6 +1201,7 @@ object CoreHooks {
                 try {
                     val instanceId = getCurrentInstanceId(
                         param.thisObject?.javaClass?.classLoader
+                            ?: param.method.declaringClass?.classLoader
                     ) ?: return
 
                     val identifiers = DeviceFingerprint.getIdentifiers(instanceId)
@@ -1184,19 +1249,43 @@ object CoreHooks {
                     if (field.declaringClass.name != "android.os.Build") return
 
                     val instanceId = getCurrentInstanceId(
-                        param.method.declaringClass?.classLoader
+                        param.thisObject?.javaClass?.classLoader
+                            ?: param.method.declaringClass?.classLoader
                     ) ?: return
 
                     val config = instanceConfigs[instanceId]
                     val identifiers = DeviceFingerprint.getIdentifiers(instanceId)
+                    val model = config?.spoofModel?.ifBlank { null }
+                    val brand = config?.spoofBrand?.ifBlank { null }
+                    val manufacturer = config?.spoofManufacturer?.ifBlank { null }
+                    val androidVersion = config?.spoofAndroidVersion?.ifBlank { null }
+                    val serial = config?.spoofSerial?.ifBlank { null } ?: identifiers.serial
+
+                    val matchedProfile = com.fesu.renjana.core.DeviceDatabase.profiles.firstOrNull {
+                        (model != null && it.model.equals(model, ignoreCase = true)) ||
+                        (brand != null && it.brand.equals(brand, ignoreCase = true))
+                    }
+
+                    val effectiveModel = model ?: matchedProfile?.model ?: "SM-S911B"
+                    val effectiveBrand = brand ?: matchedProfile?.brand ?: "samsung"
+                    val effectiveManufacturer = manufacturer ?: matchedProfile?.manufacturer ?: "Samsung"
+                    val effectiveVersion = androidVersion ?: matchedProfile?.androidVersion ?: "14"
+                    val deviceCode = effectiveModel.lowercase().replace(" ", "_").replace("-", "_")
+                    val effectiveFingerprint = matchedProfile?.buildFingerprint ?: (
+                        "$effectiveBrand/$deviceCode/$deviceCode:$effectiveVersion/UP1A.231005.007/$serial:user/release-keys"
+                    )
 
                     val spoofed: String? = when (field.name) {
-                        "FINGERPRINT"  -> identifiers.serial  // use serial as fingerprint base
-                        "SERIAL"       -> config?.spoofSerial ?: identifiers.serial
-                        "MODEL"        -> config?.spoofModel ?: null
-                        "BRAND"        -> config?.spoofBrand ?: null
-                        "MANUFACTURER" -> config?.spoofManufacturer ?: null
-                        "DEVICE"       -> config?.spoofModel ?: null
+                        "FINGERPRINT"  -> effectiveFingerprint
+                        "SERIAL"       -> serial
+                        "MODEL"        -> effectiveModel
+                        "BRAND"        -> effectiveBrand
+                        "MANUFACTURER" -> effectiveManufacturer
+                        "DEVICE"       -> deviceCode
+                        "PRODUCT"      -> deviceCode
+                        "BOARD"        -> deviceCode
+                        "HARDWARE"     -> effectiveManufacturer.lowercase()
+                        "BOOTLOADER"   -> "${effectiveModel}_1.0"
                         else -> null
                     }
 

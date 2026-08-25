@@ -178,17 +178,18 @@ object GuestInfoCache {
             val addAssetPath = AssetManager::class.java.getDeclaredMethod(
                 "addAssetPath", String::class.java
             ).apply { isAccessible = true }
-            val added = addAssetPath.invoke(assetManager, apkPath) as? Int ?: 0
-            if (added == 0) {
-                RenjanaLog.w(TAG, "addAssetPath returned 0 for $apkPath; trying fallback")
-            } else {
-                val hostRes = context.resources
-                return Resources(
-                    assetManager,
-                    hostRes.displayMetrics,
-                    hostRes.configuration
-                )
+            val allApks = com.fesu.renjana.core.VirtualClassLoader.resolveAllApkPaths(apkPath)
+            for (path in allApks) {
+                try {
+                    addAssetPath.invoke(assetManager, path)
+                } catch (_: Throwable) {}
             }
+            val hostRes = context.resources
+            return Resources(
+                assetManager,
+                hostRes.displayMetrics,
+                hostRes.configuration
+            )
         } catch (e: Throwable) {
             RenjanaLog.w(TAG, "AssetManager reflection failed: ${e.message}; trying fallback")
         }

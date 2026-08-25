@@ -256,7 +256,16 @@ object SignatureSpoof {
             return true
         }
 
-        val sigs = extractSignatures(apkPath)
+        // Prefer the PackageManager path (correct GET_SIGNING_CERTIFICATES handling
+        // on API 28+) whenever the guest is installed — the raw-APK parsers below
+        // are fragile fallbacks. extractSignatures(apkPath) alone skips it.
+        val sigs = try {
+            val pm = com.fesu.renjana.RenjanaApplication.get().packageManager
+            extractSignatures(apkPath, pm, packageName)
+        } catch (_: Throwable) {
+            null
+        } ?: extractSignatures(apkPath)
+
         if (sigs != null && sigs.isNotEmpty()) {
             signatureCache[packageName] = sigs
             computeAndCacheHash(packageName, sigs)

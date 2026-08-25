@@ -328,9 +328,14 @@ class ResourceManager(private val hostContext: Context) {
         )
         addAssetPathMethod.isAccessible = true
 
-        val cookie = addAssetPathMethod.invoke(assetManager, apkPath) as? Int
-        if (cookie == null || cookie == 0) {
-            throw RuntimeException("addAssetPath failed for $apkPath")
+        val allApks = VirtualClassLoader.resolveAllApkPaths(apkPath)
+        for (path in allApks) {
+            try {
+                val cookie = addAssetPathMethod.invoke(assetManager, path) as? Int
+                RenjanaLog.d(TAG, "Added asset path: $path (cookie=$cookie)")
+            } catch (e: Exception) {
+                RenjanaLog.w(TAG, "Failed to add asset path $path: ${e.message}")
+            }
         }
 
         return assetManager

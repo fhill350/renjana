@@ -71,6 +71,23 @@ class InstanceManager(
                     isActive = false, config = config
                 )
                 instanceDao.insertInstance(instanceToEntity(instance))
+                if (packageName.isNotBlank()) {
+                    try {
+                        instanceAppDao.insertApp(
+                            InstanceAppEntity(
+                                instanceId = id,
+                                packageName = packageName,
+                                appName = appName,
+                                apkPath = apkPath,
+                                versionName = versionName,
+                                versionCode = versionCode,
+                                addedAt = now
+                            )
+                        )
+                    } catch (e: Exception) {
+                        RenjanaLog.w(TAG, "Could not insert initial app entry: ${e.message}")
+                    }
+                }
                 RenjanaLog.i(TAG, "Created instance: $id ($packageName)")
                 // Pre-generate and cache fingerprint identifiers at creation time
                 try {
@@ -117,6 +134,26 @@ class InstanceManager(
                 Result.success(Unit)
             } catch (e: Exception) {
                 RenjanaLog.e(TAG, "Failed to rename instance", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Link (or unlink, with null) a Google account to an instance. Used by the
+     * accounts UI and by the organic sign-in capture path — when a guest app
+     * signs in with Google, the captured account is auto-linked here.
+     */
+    suspend fun assignAccount(id: String, accountId: String?): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val entity = instanceDao.getInstanceById(id)
+                    ?: return@withContext Result.failure(IllegalArgumentException("Instance not found: $id"))
+                instanceDao.updateInstance(entity.copy(accountId = accountId))
+                RenjanaLog.i(TAG, "Assigned account $accountId to instance $id")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                RenjanaLog.e(TAG, "Failed to assign account to instance $id", e)
                 Result.failure(e)
             }
         }

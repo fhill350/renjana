@@ -1,9 +1,9 @@
 package com.fesu.renjana.ui.components
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import android.util.Log
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -33,7 +34,7 @@ private fun Drawable.toImageBitmap(): ImageBitmap {
     val width = intrinsicWidth.coerceAtLeast(1)
     val height = intrinsicHeight.coerceAtLeast(1)
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
+    val canvas = android.graphics.Canvas(bitmap)
     setBounds(0, 0, canvas.width, canvas.height)
     draw(canvas)
     return bitmap.asImageBitmap()
@@ -106,40 +107,76 @@ fun AppIcon(
                     .background(MaterialTheme.colorScheme.surfaceVariant)
             )
         }
-        // ── Emoji overlay — TopStart (opposite of Renjana badge) ──────────
+        // ── Emoji overlay — TopStart (if present) ──────────────────────────
         if (!instanceEmoji.isNullOrBlank()) {
             Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(6.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, ringColor ?: MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .size(18.dp)
+                    .size((size.value * 0.38f).coerceIn(16f, 22f).dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = instanceEmoji,
-                        fontSize = 9.sp,
+                        fontSize = (size.value * 0.18f).coerceIn(8f, 11f).sp,
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
             }
         }
-        // ── Renjana "R" badge — BottomStart ───────────────────────────────
+
+        // ── Masked Renjana Container Badge — BottomEnd ─────────────────────
         if (showRenjanaBadge) {
+            val badgeSize = (size.value * 0.40f).coerceIn(16f, 22f).dp
             Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(6.dp),
+                color = Color(0xFF0B1120).copy(alpha = 0.92f),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    ringColor ?: MaterialTheme.colorScheme.primary
+                ),
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .size(16.dp)
+                    .align(Alignment.BottomEnd)
+                    .size(badgeSize)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "R",
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        fontSize = 8.sp,
-                        style = MaterialTheme.typography.labelSmall
-                    )
+                    Canvas(modifier = Modifier.size(badgeSize * 0.65f)) {
+                        val w = this.size.width
+                        val h = this.size.height
+                        val badgeColor = ringColor ?: Color(0xFF38BDF8)
+
+                        // Top face
+                        val pTop = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(w * 0.5f, 0f)
+                            lineTo(w, h * 0.28f)
+                            lineTo(w * 0.5f, h * 0.55f)
+                            lineTo(0f, h * 0.28f)
+                            close()
+                        }
+                        drawPath(pTop, color = badgeColor.copy(alpha = 0.95f))
+
+                        // Left face
+                        val pLeft = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(0f, h * 0.28f)
+                            lineTo(w * 0.5f, h * 0.55f)
+                            lineTo(w * 0.5f, h)
+                            lineTo(0f, h * 0.72f)
+                            close()
+                        }
+                        drawPath(pLeft, color = badgeColor.copy(alpha = 0.7f))
+
+                        // Right face
+                        val pRight = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(w * 0.5f, h * 0.55f)
+                            lineTo(w, h * 0.28f)
+                            lineTo(w, h * 0.72f)
+                            lineTo(w * 0.5f, h)
+                            close()
+                        }
+                        drawPath(pRight, color = badgeColor.copy(alpha = 0.5f))
+                    }
                 }
             }
         }

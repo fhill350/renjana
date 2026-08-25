@@ -138,12 +138,24 @@ class CreateInstanceViewModel(application: Application) : AndroidViewModel(appli
                     config = config
                 )
 
-                if (result.isSuccess) {
-                    _creationSuccess.value = true
-                } else {
-                    val exception = result.exceptionOrNull()
-                    _error.value = exception?.message ?: "Failed to create instance"
-                }
+                result.fold(
+                    onSuccess = { instance ->
+                        val addAppResult = instanceManager.addAppToInstance(
+                            instanceId = instance.id,
+                            packageName = packageName,
+                            appName = appName,
+                            versionName = versionName,
+                            versionCode = versionCode,
+                            apkPath = apkPath
+                        )
+
+                        addAppResult.fold(
+                            onSuccess = { _creationSuccess.value = true },
+                            onFailure = { e -> _error.value = e.message ?: "Failed to add app to instance" }
+                        )
+                    },
+                    onFailure = { e -> _error.value = e.message ?: "Failed to create instance" }
+                )
             } catch (e: Exception) {
                 RenjanaLog.e(TAG, "Error creating instance: ${e.message}")
                 _error.value = e.message ?: "Failed to create instance"

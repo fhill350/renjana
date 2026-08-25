@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -22,10 +23,16 @@ fun ShimmerBox(
     modifier: Modifier = Modifier,
     cornerRadius: Int = 12
 ) {
+    val contentResolver = LocalView.current.context.contentResolver
+    val animationsEnabled = android.provider.Settings.Global.getFloat(
+        contentResolver,
+        android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+        1f
+    ) > 0f
     val transition = rememberInfiniteTransition(label = "shimmer")
     val translateAnim by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 1000f,
+        targetValue = if (animationsEnabled) 1000f else 0f,
         animationSpec = infiniteRepeatable(
             animation = tween(1200, easing = LinearEasing),
             repeatMode = RepeatMode.Restart

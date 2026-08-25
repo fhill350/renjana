@@ -161,8 +161,10 @@ fun RenjanaApp(
                 }
 
                 createSheetApp?.let { (pkg, apkPath) ->
+                    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
                     ModalBottomSheet(
-                        onDismissRequest = { createSheetApp = null }
+                        onDismissRequest = { createSheetApp = null },
+                        sheetState = sheetState
                     ) {
                         CreateInstanceSheetContent(
                             packageName = pkg,

@@ -2,6 +2,7 @@ package com.fesu.renjana.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,6 +22,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -72,9 +77,14 @@ fun RenjanaBottomBar(
                             if (isSelected) MaterialTheme.colorScheme.primaryContainer
                             else Color.Transparent
                         )
+                        .semantics {
+                            selected = isSelected
+                            role = Role.Tab
+                        }
                         .clickable(
                             interactionSource = interactionSource,
-                            indication = null,
+                            indication = LocalIndication.current,
+                            onClickLabel = "Open ${item.label}",
                             onClick = { onItemClick(item) }
                         )
                         .padding(vertical = 8.dp),

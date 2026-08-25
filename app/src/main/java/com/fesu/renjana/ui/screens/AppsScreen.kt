@@ -72,7 +72,7 @@ fun AppsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Apps", fontWeight = FontWeight.Bold) },
+                title = { Text(if (onNavigateBack != null) "Choose app to clone" else "Apps", fontWeight = FontWeight.Bold) },
                 navigationIcon = if (onNavigateBack != null) {
                     {
                         IconButton(onClick = { onNavigateBack.invoke() }) {
@@ -87,7 +87,7 @@ fun AppsScreen(
                     }) {
                         Icon(
                             if (viewMode == AppViewMode.LIST) Icons.Filled.ViewModule else Icons.Filled.ViewList,
-                            contentDescription = if (viewMode == AppViewMode.LIST) "Grid view" else "List view"
+                            contentDescription = if (viewMode == AppViewMode.LIST) "Switch to grid view" else "Switch to list view"
                         )
                     }
                     IconButton(onClick = { haptics.tick(); viewModel.refresh() }) {
@@ -110,7 +110,7 @@ fun AppsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
-            placeholder = { Text("Search apps...") },
+            placeholder = { Text("Search apps") },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search") },
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
@@ -152,7 +152,7 @@ fun AppsScreen(
                         if (searchQuery.isBlank()) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "Install apps on your device to clone them",
+                                text = "Install apps on your device, then create an instance.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
@@ -163,7 +163,7 @@ fun AppsScreen(
                 viewMode == AppViewMode.LIST -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         itemsIndexed(filteredApps, key = { _, it -> it.packageName }) { index, app ->
@@ -176,14 +176,13 @@ fun AppsScreen(
                                 )
                             }
                         }
-                        item { Spacer(modifier = Modifier.height(80.dp)) }
                     }
                 }
                 else -> {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -197,7 +196,6 @@ fun AppsScreen(
                                 )
                             }
                         }
-                        item { Spacer(modifier = Modifier.height(80.dp)) }
                     }
                 }
             }
@@ -226,7 +224,7 @@ fun AppListItem(app: AppInfo, isCloned: Boolean, onClick: () -> Unit) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 Icons.Filled.Check,
-                                contentDescription = "Cloned",
+                                contentDescription = "Instance exists",
                                 tint = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.size(12.dp)
                             )
@@ -263,7 +261,7 @@ fun AppListItem(app: AppInfo, isCloned: Boolean, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.primaryContainer
                 ) {
                     Text(
-                        text = "Cloned",
+                        text = "Instance exists",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
@@ -297,7 +295,7 @@ fun AppGridItem(app: AppInfo, isCloned: Boolean, onClick: () -> Unit) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 Icons.Filled.Check,
-                                contentDescription = "Cloned",
+                                contentDescription = "Instance exists",
                                 tint = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.size(12.dp)
                             )

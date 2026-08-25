@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -81,11 +82,19 @@ class HookManagerActivity : ComponentActivity() {
                         } else {
                             FridaManager.loadGadget(instanceId)
                         }
-                    }
+                    },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(
+                        defaultElevation = 6.dp,
+                        pressedElevation = 10.dp
+                    )
                 ) {
                     Icon(
                         if (isGadgetActive) Icons.Default.Stop else Icons.Default.PlayArrow,
-                        contentDescription = if (isGadgetActive) "Stop Gadget" else "Start Gadget"
+                        contentDescription = if (isGadgetActive) "Stop Gadget" else "Start Gadget",
+                        tint = MaterialTheme.colorScheme.onPrimary
                     )
                 }
             }

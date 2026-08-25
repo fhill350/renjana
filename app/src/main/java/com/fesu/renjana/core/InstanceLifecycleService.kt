@@ -79,13 +79,41 @@ class InstanceLifecycleService : Service() {
                 if (instanceId != null) {
                     startForeground(NOTIFICATION_ID, notifManager.createForegroundNotification())
                     registerInstance(instanceId)
+                    // Per-app registration from the reporting StubActivity — the
+                    // authoritative signal, covering apps started by GUEST navigation
+                    // (which the launcher never sees).
+                    val pkg = intent.getStringExtra(StubActivity.EXTRA_PACKAGE_NAME)
+                    val stubIndex = intent.getIntExtra(StubActivity.EXTRA_STUB_INDEX, -1)
+                    if (!pkg.isNullOrBlank() && stubIndex >= 0) {
+                        scope.launch {
+                            try {
+                                val app = RenjanaApplication.get().database.instanceAppDao()
+                                    .getApp(instanceId, pkg)
+                                AppRuntimeRegistry.register(
+                                    instanceId = instanceId,
+                                    packageName = pkg,
+                                    appName = app?.appName ?: pkg,
+                                    stubIndex = stubIndex
+                                )
+                            } catch (e: Exception) {
+                                RenjanaLog.w(TAG, "Per-app register failed: ${e.message}")
+                            }
+                        }
+                    }
                 } else {
                     startForeground(NOTIFICATION_ID, notifManager.createForegroundNotification())
                 }
             }
             InstanceNotificationManager.ACTION_STOP_INSTANCE -> {
                 val instanceId = intent.getStringExtra(InstanceNotificationManager.EXTRA_INSTANCE_ID)
-                if (instanceId != null) {
+                val pkg = intent.getStringExtra(StubActivity.EXTRA_PACKAGE_NAME)
+                if (instanceId != null && !pkg.isNullOrBlank()) {
+                    // A single app's stub reported shutdown
+                    AppRuntimeRegistry.unregister(instanceId, pkg)
+                    if (!AppRuntimeRegistry.isInstanceRunning(instanceId)) {
+                        onInstanceDestroyed(instanceId)
+                    }
+                } else if (instanceId != null) {
                     stopInstance(instanceId)
                 }
             }
@@ -174,11 +202,17 @@ class InstanceLifecycleService : Service() {
     }
 
     /**
-     * Stop a specific instance (from notification action or UI).
+     * Stop a specific instance (from notification action or UI): closes every
+     * running app's task — the stubs finish and kill their own processes — then
+     * cleans up bookkeeping.
      */
     fun stopInstance(instanceId: String) {
+        // Close ALL stub tasks belonging to this instance (a guest app occupies
+        // several stub tasks across its navigation) — processes self-destruct.
+        AppRuntimeRegistry.closeInstance(this, instanceId)
         runningInstances.remove(instanceId)
         notifManager.cancelInstanceNotification(instanceId)
+        ActivityStubManager.releaseAllStubsForInstance(instanceId)
 
         // Update DB
         scope.launch {

@@ -31,7 +31,7 @@ fun StatHeader(
     ) {
         StatCard(
             value = totalInstances.toString(),
-            label = "Total",
+            label = "Instances",
             modifier = Modifier.weight(1f)
         )
         StatCard(

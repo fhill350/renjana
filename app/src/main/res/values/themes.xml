@@ -12,4 +12,11 @@
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowNoTitle">true</item>
     </style>
+
+    <!-- Stub Activity Theme - inherits from AppCompat to provide all AppCompat/Material attributes -->
+    <style name="Theme.Renjana.Stub" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@android:color/background_dark</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="windowActionBar">false</item>
+    </style>
 </resources>

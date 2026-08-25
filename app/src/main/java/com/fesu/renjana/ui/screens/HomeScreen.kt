@@ -18,6 +18,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.ViewModule
@@ -34,7 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.border
-import com.fesu.renjana.RenjanaApplication
+import com.fesu.renjana.core.AppRuntimeRegistry
 import com.fesu.renjana.core.InstanceState
 import com.fesu.renjana.database.InstanceAppEntity
 import com.fesu.renjana.models.Instance
@@ -72,22 +74,19 @@ fun HomeScreen(
     var editMode by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var pendingDeleteId by remember { mutableStateOf<String?>(null) }
+    var pendingStopId by remember { mutableStateOf<String?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     // Track scroll state for list
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
-    // Poll running instances
-    var runningStates by remember { mutableStateOf<Map<String, InstanceState>>(emptyMap()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            runningStates = RenjanaApplication.get().lifecycleService?.getRunningInstances()?.associate {
-                it.instanceId to it.state
-            } ?: emptyMap()
-            kotlinx.coroutines.delay(2000)
-        }
-    }
+    // Per-app runtime state from the registry (reconciled with live processes
+    // by the ViewModel's 5s refresh) — replaces the old per-instance service poll.
+    val runningApps by viewModel.runningApps.collectAsState()
+    val runningStates = runningApps.groupBy { it.instanceId }
+        .mapValues { (_, apps) -> InstanceState.RUNNING }
 
-    val runningCount = runningStates.values.count { it == InstanceState.RUNNING || it == InstanceState.PAUSED }
+    val runningCount = runningStates.size
     val haptics = rememberHaptics()
 
     LaunchedEffect(error) {
@@ -97,7 +96,7 @@ fun HomeScreen(
         }
     }
 
-    // Navigate to new container after creation
+    // Navigate to new instance after creation
     LaunchedEffect(createdInstanceId) {
         createdInstanceId?.let { id ->
             onCreateInstance(id)
@@ -117,7 +116,7 @@ fun HomeScreen(
                     }) {
                         Icon(
                             if (viewMode == HomeViewMode.LIST) Icons.Filled.ViewModule else Icons.Filled.ViewList,
-                            contentDescription = if (viewMode == HomeViewMode.LIST) "Grid view" else "List view"
+                                contentDescription = if (viewMode == HomeViewMode.LIST) "Switch to grid view" else "Switch to list view"
                         )
                     }
                     if (instances.isNotEmpty()) {
@@ -127,7 +126,7 @@ fun HomeScreen(
                         }) {
                             Icon(
                                 Icons.Filled.Edit,
-                                contentDescription = "Edit",
+                                contentDescription = "Edit instances",
                                 tint = if (editMode) MaterialTheme.colorScheme.primary
                                        else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -143,11 +142,19 @@ fun HomeScreen(
                         haptics.tap()
                         showCreateDialog = true
                     },
-                    shape = RoundedCornerShape(16.dp)
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(
+                        defaultElevation = 6.dp,
+                        pressedElevation = 10.dp
+                    )
                 ) {
                     Icon(
                         Icons.Filled.Add,
-                        contentDescription = "Add instance"
+                        contentDescription = "Add instance",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
@@ -172,6 +179,57 @@ fun HomeScreen(
 
             // Content
             Box(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Quick Switch bubble onboarding: only while apps are running
+                    // and the overlay permission is still missing.
+                    val overlayOk = android.provider.Settings.canDrawOverlays(context)
+                    var bubbleBannerDismissed by remember { mutableStateOf(false) }
+                    if (!overlayOk && runningApps.isNotEmpty() && !bubbleBannerDismissed) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Filled.OpenInNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    "Enable the Quick Switch bubble to jump between running apps",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                TextButton(onClick = {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            android.net.Uri.parse("package:${context.packageName}")
+                                        )
+                                    )
+                                }) { Text("Enable") }
+                                IconButton(onClick = { bubbleBannerDismissed = true }, modifier = Modifier.size(28.dp)) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "Dismiss",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                            }
+                        }
+                    }
                 when {
                     isLoading && instances.isEmpty() -> {
                         Column { repeat(4) { ShimmerInstanceCard() } }
@@ -186,7 +244,7 @@ fun HomeScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             itemsIndexed(instances, key = { _, it -> it.id }) { index, instance ->
@@ -203,8 +261,19 @@ fun HomeScreen(
                                             if (editMode) editMode = false
                                             onInstanceClick(instance.id)
                                         },
+                                        onLaunch = {
+                                            haptics.tap()
+                                            viewModel.launchInstance(instance.id)
+                                        },
+                                        onOpen = {
+                                            haptics.tap()
+                                            val lastApp = runningApps.lastOrNull { it.instanceId == instance.id }
+                                            if (lastApp != null) {
+                                                AppRuntimeRegistry.openApp(context, lastApp)
+                                            }
+                                        },
                                         onStop = {
-                                            viewModel.stopInstance(instance.id)
+                                            pendingStopId = instance.id
                                         },
                                         onDelete = {
                                             haptics.reject()
@@ -213,14 +282,13 @@ fun HomeScreen(
                                     )
                                 }
                             }
-                            item { Spacer(modifier = Modifier.height(80.dp)) }
                         }
                     }
                     else -> {
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(2),
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
@@ -237,8 +305,12 @@ fun HomeScreen(
                                             if (editMode) editMode = false
                                             onInstanceClick(instance.id)
                                         },
+                                        onLaunch = {
+                                            haptics.tap()
+                                            viewModel.launchInstance(instance.id)
+                                        },
                                         onStop = {
-                                            viewModel.stopInstance(instance.id)
+                                            pendingStopId = instance.id
                                         },
                                         onDelete = {
                                             haptics.reject()
@@ -247,17 +319,15 @@ fun HomeScreen(
                                     )
                                 }
                             }
-                            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
-                                Spacer(modifier = Modifier.height(80.dp))
-                            }
                         }
                     }
                 }
+                } // end Column (banner + list)
             }
         }
     }
 
-    // Create Container Dialog
+    // Create Instance Dialog
     if (showCreateDialog) {
         CreateContainerDialog(
             onDismiss = { showCreateDialog = false },
@@ -269,6 +339,21 @@ fun HomeScreen(
     }
 
     // Delete Instance Confirmation Dialog
+    pendingStopId?.let { id ->
+        val name = instances.firstOrNull { it.id == id }?.appName ?: "this instance"
+        val appCount = runningApps.count { it.instanceId == id }
+        com.fesu.renjana.ui.components.ConfirmDialog(
+            title = "Stop $name?",
+            message = "All running apps in this instance ($appCount) will be closed. Unsaved state is lost.",
+            confirmLabel = "Stop",
+            onConfirm = {
+                viewModel.stopInstance(id)
+                pendingStopId = null
+            },
+            onDismiss = { pendingStopId = null }
+        )
+    }
+
     pendingDeleteId?.let { id ->
         AlertDialog(
             onDismissRequest = { pendingDeleteId = null },
@@ -301,11 +386,11 @@ private fun CreateContainerDialog(
             containerName = ""
             nameError = null
         },
-        title = { Text("New Container", fontWeight = FontWeight.Bold) },
+        title = { Text("New Instance", fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 Text(
-                    "A container holds multiple apps with isolated storage and accounts.",
+                    "An instance keeps apps, storage, and accounts separate.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -316,7 +401,7 @@ private fun CreateContainerDialog(
                         containerName = it
                         nameError = null
                     },
-                    label = { Text("Container name") },
+                    label = { Text("Instance name") },
                     placeholder = { Text("e.g. Work, Gaming, Shopping") },
                     isError = nameError != null,
                     supportingText = nameError?.let { err -> { Text(err, color = MaterialTheme.colorScheme.error) } },
@@ -335,7 +420,7 @@ private fun CreateContainerDialog(
                         containerName = ""
                     }
                 }
-            ) { Text("Create") }
+            ) { Text("Create Instance") }
         },
         dismissButton = {
             TextButton(onClick = {
@@ -378,7 +463,7 @@ private fun EmptyStateHome(onNavigateToApps: () -> Unit) {
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Create Instance")
+            Text("Browse Apps to Clone")
         }
     }
 }
@@ -392,6 +477,8 @@ private fun InstanceListCard(
     editMode: Boolean,
     viewModel: HomeViewModel,
     onClick: () -> Unit,
+    onLaunch: () -> Unit,
+    onOpen: () -> Unit,
     onStop: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -517,11 +604,29 @@ private fun InstanceListCard(
                 }
                 if (!editMode) {
                     if (isRunning || isPaused) {
+                        IconButton(onClick = onOpen, modifier = Modifier.size(36.dp)) {
+                            Icon(
+                                Icons.Filled.OpenInNew,
+                                contentDescription = "Open instance",
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         IconButton(onClick = onStop, modifier = Modifier.size(36.dp)) {
                             Icon(
                                 Icons.Filled.Stop,
-                                contentDescription = "Stop",
-                                modifier = Modifier.size(22.dp)
+                                contentDescription = "Stop instance",
+                                modifier = Modifier.size(22.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    } else if (instanceApps.isNotEmpty() || instance.packageName.isNotBlank()) {
+                        IconButton(onClick = onLaunch, modifier = Modifier.size(36.dp)) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = "Launch instance",
+                                modifier = Modifier.size(22.dp),
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -534,13 +639,13 @@ private fun InstanceListCard(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(6.dp)
-                        .size(24.dp)
+                        .size(48.dp)
                         .clickable(onClick = onDelete)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.Close,
-                            contentDescription = "Delete",
+                            contentDescription = "Delete instance",
                             tint = MaterialTheme.colorScheme.onError,
                             modifier = Modifier.size(16.dp)
                         )
@@ -559,6 +664,7 @@ private fun InstanceGridCard(
     isPaused: Boolean,
     editMode: Boolean,
     onClick: () -> Unit,
+    onLaunch: () -> Unit,
     onStop: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -587,6 +693,7 @@ private fun InstanceGridCard(
                     AppIcon(
                         packageName = instance.packageName,
                         size = 52.dp,
+                        showRenjanaBadge = true,
                         instanceColor = instance.config.instanceColor,
                         instanceEmoji = instance.config.instanceEmoji
                     )
@@ -597,22 +704,6 @@ private fun InstanceGridCard(
                             size = 8.dp,
                             modifier = Modifier.align(Alignment.BottomEnd)
                         )
-                    }
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .size(16.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "R",
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                fontSize = 8.sp,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
@@ -630,11 +721,23 @@ private fun InstanceGridCard(
                             onClick = onStop,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(vertical = 4.dp)
+                            contentPadding = PaddingValues(vertical = 4.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                         ) {
                             Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Stop", fontSize = 11.sp)
+                        }
+                    } else {
+                        FilledTonalButton(
+                            onClick = onLaunch,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Play", fontSize = 11.sp)
                         }
                     }
                 }
@@ -646,13 +749,13 @@ private fun InstanceGridCard(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(6.dp)
-                        .size(24.dp)
+                        .size(48.dp)
                         .clickable(onClick = onDelete)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Filled.Close,
-                            contentDescription = "Delete",
+                            contentDescription = "Delete instance",
                             tint = MaterialTheme.colorScheme.onError,
                             modifier = Modifier.size(16.dp)
                         )

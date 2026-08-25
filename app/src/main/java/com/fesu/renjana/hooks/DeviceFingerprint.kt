@@ -267,6 +267,73 @@ object DeviceFingerprint {
     }
 
     /**
+     * Mutates static Build fields in the current subprocess to match the instance's identity.
+     * This provides 100% reliable hardware spoofing for all bytecode direct field accesses.
+     */
+    fun applyDeviceSpoofToProcess(config: com.fesu.renjana.models.InstanceConfig?, instanceId: String) {
+        try {
+            val identifiers = getIdentifiers(instanceId)
+            val model = config?.spoofModel?.ifBlank { null }
+            val brand = config?.spoofBrand?.ifBlank { null }
+            val manufacturer = config?.spoofManufacturer?.ifBlank { null }
+            val androidVersion = config?.spoofAndroidVersion?.ifBlank { null }
+            val serial = config?.spoofSerial?.ifBlank { null } ?: identifiers.serial
+
+            // Try to match a known profile from DeviceDatabase for realistic fields
+            val matchedProfile = com.fesu.renjana.core.DeviceDatabase.profiles.firstOrNull {
+                (model != null && it.model.equals(model, ignoreCase = true)) ||
+                (brand != null && it.brand.equals(brand, ignoreCase = true))
+            }
+
+            val effectiveModel = model ?: matchedProfile?.model ?: "SM-S911B"
+            val effectiveBrand = brand ?: matchedProfile?.brand ?: "samsung"
+            val effectiveManufacturer = manufacturer ?: matchedProfile?.manufacturer ?: "Samsung"
+            val effectiveVersion = androidVersion ?: matchedProfile?.androidVersion ?: "14"
+            val deviceCode = effectiveModel.lowercase().replace(" ", "_").replace("-", "_")
+
+            val effectiveFingerprint = matchedProfile?.buildFingerprint ?: (
+                "$effectiveBrand/$deviceCode/$deviceCode:$effectiveVersion/UP1A.231005.007/$serial:user/release-keys"
+            )
+
+            setStaticField(Build::class.java, "MODEL", effectiveModel)
+            setStaticField(Build::class.java, "DEVICE", deviceCode)
+            setStaticField(Build::class.java, "PRODUCT", deviceCode)
+            setStaticField(Build::class.java, "BOARD", deviceCode)
+            setStaticField(Build::class.java, "BRAND", effectiveBrand)
+            setStaticField(Build::class.java, "MANUFACTURER", effectiveManufacturer)
+            setStaticField(Build::class.java, "HARDWARE", effectiveManufacturer.lowercase())
+            setStaticField(Build::class.java, "BOOTLOADER", "${effectiveModel}_1.0")
+            setStaticField(Build::class.java, "SERIAL", serial)
+            setStaticField(Build::class.java, "FINGERPRINT", effectiveFingerprint)
+            setStaticField(Build.VERSION::class.java, "RELEASE", effectiveVersion)
+
+            // Also register in AntiDetection intercepted system properties for SystemProperties.get calls
+            AntiDetection.setSystemPropertyIntercept("ro.product.model", effectiveModel)
+            AntiDetection.setSystemPropertyIntercept("ro.product.brand", effectiveBrand)
+            AntiDetection.setSystemPropertyIntercept("ro.product.name", deviceCode)
+            AntiDetection.setSystemPropertyIntercept("ro.product.device", deviceCode)
+            AntiDetection.setSystemPropertyIntercept("ro.product.manufacturer", effectiveManufacturer)
+            AntiDetection.setSystemPropertyIntercept("ro.hardware", effectiveManufacturer.lowercase())
+            AntiDetection.setSystemPropertyIntercept("ro.build.version.release", effectiveVersion)
+            AntiDetection.setSystemPropertyIntercept("ro.build.fingerprint", effectiveFingerprint)
+            AntiDetection.setSystemPropertyIntercept("ro.serialno", serial)
+            AntiDetection.setSystemPropertyIntercept("ro.boot.serialno", serial)
+
+            RenjanaLog.i(TAG, "Applied device spoofing to process (pid=${android.os.Process.myPid()}) for instance $instanceId: $effectiveBrand $effectiveModel (Android $effectiveVersion)")
+        } catch (e: Throwable) {
+            RenjanaLog.w(TAG, "Failed to apply static device spoof: ${e.message}")
+        }
+    }
+
+    private fun setStaticField(clazz: Class<*>, fieldName: String, value: Any?) {
+        try {
+            val field = clazz.getDeclaredField(fieldName)
+            field.isAccessible = true
+            field.set(null, value)
+        } catch (_: Throwable) {}
+    }
+
+    /**
      * Cleanup instance-specific identifiers
      */
     fun cleanup(instanceId: String) {

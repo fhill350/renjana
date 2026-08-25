@@ -50,6 +50,17 @@ object ActivityStubManager {
     /** "instanceId:stubIndex:stubRequestCode" → original guest request code */
     private val requestCodeMap = ConcurrentHashMap<String, Int>()
 
+    /** stubIndex → allocation timestamp, guarding slots whose process is still starting. */
+    private val allocationTimes = ConcurrentHashMap<Int, Long>()
+
+    /**
+     * How long a freshly-allocated slot is kept occupied even if its process has not
+     * appeared in the process list yet — a just-started :pN process is briefly
+     * invisible to ActivityManager, and handing its slot to a second launch would
+     * put two guests in one process.
+     */
+    private const val ALLOCATION_GRACE_MS = 10_000L
+
     // ─── Instance cache (avoids runBlocking on main thread) ──
 
     /**
@@ -125,23 +136,34 @@ object ActivityStubManager {
         guestClass: String,
         guestIntent: Intent?,
         apkPath: String,
-        launchMode: Int = LAUNCH_STANDARD
+        launchMode: Int = LAUNCH_STANDARD,
+        instance: Instance? = null,
+        targetPackageName: String? = null,
+        targetAppName: String? = null
     ): Intent? {
-        // Handle launch modes by inspecting the instance stack
+        val resolvedInstance = instance ?: getCachedInstance(instanceId)
+        val effectivePackage = targetPackageName?.ifBlank { null }
+            ?: resolvedInstance?.packageName.orEmpty()
+        val effectiveAppName = targetAppName?.ifBlank { null }
+            ?: resolvedInstance?.appName.orEmpty()
+
+        val stackKey = stackKey(instanceId, effectivePackage)
+
+        // Handle launch modes by inspecting the app-specific instance stack
         when (launchMode) {
             LAUNCH_SINGLE_TOP -> {
-                val top = peekTop(instanceId)
+                val top = peekTop(stackKey)
                 if (top != null && top.guestClassName == guestClass) {
                     // Reuse existing stub — deliver via onNewIntent
                     return buildReDeliveryIntent(top.stubIndex, guestIntent)
                 }
             }
             LAUNCH_SINGLE_TASK, LAUNCH_SINGLE_INSTANCE -> {
-                val existing = findInStack(instanceId, guestClass)
+                val existing = findInStack(stackKey, guestClass)
                 if (existing != null) {
                     if (launchMode == LAUNCH_SINGLE_TASK) {
                         // Clear everything above this entry
-                        clearAbove(instanceId, existing.stubIndex)
+                        clearAbove(stackKey, existing.stubIndex)
                     }
                     return buildReDeliveryIntent(existing.stubIndex, guestIntent)
                 }
@@ -150,7 +172,7 @@ object ActivityStubManager {
 
         // Standard or no existing entry found — allocate a new stub
         val stubIndex = allocateStub() ?: run {
-            RenjanaLog.e(TAG, "No free stubs available for $guestClass in instance $instanceId")
+            RenjanaLog.e(TAG, "No free stubs available for $guestClass in instance $instanceId (app=$effectivePackage)")
             return null
         }
 
@@ -161,6 +183,20 @@ object ActivityStubManager {
             putExtra(StubActivity.EXTRA_APK_PATH, apkPath)
             putExtra(StubActivity.EXTRA_STUB_INDEX, stubIndex)
             putExtra(StubActivity.EXTRA_LAUNCH_MODE, launchMode)
+            putExtra(StubActivity.EXTRA_PACKAGE_NAME, effectivePackage)
+            putExtra(StubActivity.EXTRA_APP_NAME, effectiveAppName)
+
+            if (resolvedInstance != null) {
+                putExtra(StubActivity.EXTRA_DATA_PATH, resolvedInstance.dataPath)
+                if (resolvedInstance.accountId != null) {
+                    putExtra(StubActivity.EXTRA_ACCOUNT_ID, resolvedInstance.accountId)
+                }
+                putExtra(StubActivity.EXTRA_ENABLE_GMS, resolvedInstance.config.enableGms)
+                putExtra(StubActivity.EXTRA_ENABLE_FINGERPRINT, resolvedInstance.config.enableFingerprint)
+                putExtra(StubActivity.EXTRA_SPOOF_SIGNATURE, resolvedInstance.config.spoofSignature)
+                putExtra(StubActivity.EXTRA_ENABLE_ANTI_DETECTION, resolvedInstance.config.enableAntiDetection)
+            }
+
             if (guestIntent != null) {
                 putExtra(StubActivity.EXTRA_GUEST_ORIGINAL_INTENT, guestIntent)
             }
@@ -168,14 +204,14 @@ object ActivityStubManager {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        // Push onto the instance stack
-        pushToStack(instanceId, ActivityStackEntry(
+        // Push onto the app-specific instance stack
+        pushToStack(stackKey, ActivityStackEntry(
             stubIndex = stubIndex,
             guestClassName = guestClass,
             launchMode = launchMode
         ))
 
-        RenjanaLog.i(TAG, "Allocated StubActivity_$stubIndex for $guestClass (instance=$instanceId, mode=$launchMode)")
+        RenjanaLog.i(TAG, "Allocated StubActivity_$stubIndex for $guestClass (instance=$instanceId, app=$effectivePackage, mode=$launchMode)")
         return intent
     }
 
@@ -183,17 +219,68 @@ object ActivityStubManager {
      * Allocate a free stub index. Returns null if all stubs are occupied.
      */
     fun allocateStub(): Int? {
+        reconcileWithRunningProcesses()
         val index = freeStubs.pollFirst()
         if (index != null) {
+            allocationTimes[index] = System.currentTimeMillis()
             RenjanaLog.d(TAG, "Allocated stub #$index (${freeStubs.size} remaining)")
         }
         return index
     }
 
     /**
+     * Cross-process slot reconciliation.
+     *
+     * Every stub lives in its own process (:p0..:p9), but this singleton's state is
+     * per-process: allocation happens in the main process while release happens in
+     * the stub's process, so the main process's free list drifts and eventually
+     * reports "no free stubs" forever. The source of truth is the OS itself — a
+     * slot is occupied exactly when its process is alive — so refresh the free list
+     * from ActivityManager before each allocation.
+     *
+     * Slots allocated within [ALLOCATION_GRACE_MS] are never freed here even when
+     * their process is not yet listed: a spawning process is briefly invisible to
+     * ActivityManager, and reusing its slot would land two guests in one process.
+     */
+    private fun reconcileWithRunningProcesses() {
+        val app = try {
+            com.fesu.renjana.RenjanaApplication.get()
+        } catch (_: Throwable) { return }
+
+        val runningProcessNames = try {
+            val am = app.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            am?.runningAppProcesses?.map { it.processName }?.toSet()
+        } catch (_: Throwable) { null } ?: return
+
+        val now = System.currentTimeMillis()
+        for (i in 0 until TOTAL_STUBS) {
+            val suffix = ":p$i"
+            val running = runningProcessNames.any { it.endsWith(suffix) }
+            if (running) {
+                freeStubs.remove(i)
+                occupiedStubs.putIfAbsent(i, StubRecord("(running)", "(unknown)", i))
+            } else {
+                val allocatedAt = allocationTimes[i]
+                val withinGrace = allocatedAt != null && now - allocatedAt < ALLOCATION_GRACE_MS
+                if (!withinGrace) {
+                    occupiedStubs.remove(i)
+                    allocationTimes.remove(i)
+                    if (!freeStubs.contains(i)) {
+                        freeStubs.addLast(i)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Check how many free stubs remain.
      */
     fun freeStubCount(): Int = freeStubs.size
+
+    /** Public component name for a stub slot (used by AppRuntimeRegistry.openApp). */
+    fun stubComponentFor(stubIndex: Int): ComponentName =
+        stubComponentNames[stubIndex.coerceIn(0, TOTAL_STUBS - 1)]
 
     // ──────────────────────────────────────────────
     // Called by StubActivity lifecycle
@@ -223,10 +310,34 @@ object ActivityStubManager {
      */
     fun onStubReleased(instanceId: String, stubIndex: Int, guestClassName: String) {
         occupiedStubs.remove(stubIndex)
-        freeStubs.addLast(stubIndex)
+        if (!freeStubs.contains(stubIndex)) {
+            freeStubs.addLast(stubIndex)
+        }
         removeFromStack(instanceId, stubIndex)
         clearRequestCodes(instanceId, stubIndex)
         RenjanaLog.d(TAG, "Stub #$stubIndex released ($guestClassName, instance=$instanceId, ${freeStubs.size} free)")
+    }
+
+    private fun stackKey(instanceId: String, packageName: String? = null): String {
+        return if (!packageName.isNullOrBlank()) "$instanceId:$packageName" else instanceId
+    }
+
+    /**
+     * Release all stubs assigned to an instance and clear its cache.
+     */
+    fun releaseAllStubsForInstance(instanceId: String) {
+        val occupiedCopy = HashMap(occupiedStubs)
+        for ((index, record) in occupiedCopy) {
+            if (record.instanceId == instanceId) {
+                onStubReleased(instanceId, index, record.guestClassName)
+            }
+        }
+        val matchingKeys = instanceStacks.keys.filter { it == instanceId || it.startsWith("$instanceId:") }
+        for (key in matchingKeys) {
+            instanceStacks.remove(key)
+        }
+        clearInstanceCache(instanceId)
+        RenjanaLog.i(TAG, "All stubs and cache released for instance $instanceId")
     }
 
     // ──────────────────────────────────────────────
@@ -268,46 +379,53 @@ object ActivityStubManager {
     }
 
     // ──────────────────────────────────────────────
-    // Per-instance stack operations
+    // Per-instance/app stack operations
     // ──────────────────────────────────────────────
 
-    private fun getOrCreateStack(instanceId: String): MutableList<ActivityStackEntry> {
-        return instanceStacks.getOrPut(instanceId) { mutableListOf() }
+    private fun getOrCreateStack(key: String): MutableList<ActivityStackEntry> {
+        return instanceStacks.getOrPut(key) { mutableListOf() }
     }
 
-    private fun pushToStack(instanceId: String, entry: ActivityStackEntry) {
+    private fun pushToStack(key: String, entry: ActivityStackEntry) {
         synchronized(this) {
-            getOrCreateStack(instanceId).add(entry)
+            getOrCreateStack(key).add(entry)
         }
     }
 
-    private fun peekTop(instanceId: String): ActivityStackEntry? {
+    private fun peekTop(key: String): ActivityStackEntry? {
         synchronized(this) {
-            val stack = instanceStacks[instanceId] ?: return null
+            val stack = instanceStacks[key] ?: return null
             return stack.lastOrNull()
         }
     }
 
-    private fun findInStack(instanceId: String, guestClass: String): ActivityStackEntry? {
+    private fun findInStack(key: String, guestClass: String): ActivityStackEntry? {
         synchronized(this) {
-            val stack = instanceStacks[instanceId] ?: return null
+            val stack = instanceStacks[key] ?: return null
             return stack.find { it.guestClassName == guestClass }
         }
     }
 
     private fun removeFromStack(instanceId: String, stubIndex: Int) {
         synchronized(this) {
-            val stack = instanceStacks[instanceId] ?: return
-            stack.removeAll { it.stubIndex == stubIndex }
-            if (stack.isEmpty()) {
-                instanceStacks.remove(instanceId)
+            val keysToRemove = mutableListOf<String>()
+            for ((key, stack) in instanceStacks) {
+                if (key == instanceId || key.startsWith("$instanceId:")) {
+                    stack.removeAll { it.stubIndex == stubIndex }
+                    if (stack.isEmpty()) {
+                        keysToRemove.add(key)
+                    }
+                }
+            }
+            for (key in keysToRemove) {
+                instanceStacks.remove(key)
             }
         }
     }
 
-    private fun clearAbove(instanceId: String, stubIndex: Int) {
+    private fun clearAbove(key: String, stubIndex: Int) {
         synchronized(this) {
-            val stack = instanceStacks[instanceId] ?: return
+            val stack = instanceStacks[key] ?: return
             val targetPos = stack.indexOfFirst { it.stubIndex == stubIndex }
             if (targetPos >= 0 && targetPos < stack.size - 1) {
                 val toRemove = stack.subList(targetPos + 1, stack.size).toList()
@@ -324,11 +442,12 @@ object ActivityStubManager {
     }
 
     /**
-     * Get a snapshot of the activity stack for a given instance (for debugging).
+     * Get a snapshot of the activity stack for a given instance/app (for debugging).
      */
-    fun getStackSnapshot(instanceId: String): List<ActivityStackEntry> {
+    fun getStackSnapshot(instanceId: String, packageName: String? = null): List<ActivityStackEntry> {
+        val key = stackKey(instanceId, packageName)
         synchronized(this) {
-            return instanceStacks[instanceId]?.toList() ?: emptyList()
+            return instanceStacks[key]?.toList() ?: emptyList()
         }
     }
 
@@ -337,13 +456,18 @@ object ActivityStubManager {
      */
     fun clearInstance(instanceId: String) {
         synchronized(this) {
-            val stack = instanceStacks.remove(instanceId) ?: return
-            for (entry in stack) {
-                occupiedStubs.remove(entry.stubIndex)
-                freeStubs.addLast(entry.stubIndex)
-                clearRequestCodes(instanceId, entry.stubIndex)
+            val matchingKeys = instanceStacks.keys.filter { it == instanceId || it.startsWith("$instanceId:") }
+            var totalCleared = 0
+            for (key in matchingKeys) {
+                val stack = instanceStacks.remove(key) ?: continue
+                totalCleared += stack.size
+                for (entry in stack) {
+                    occupiedStubs.remove(entry.stubIndex)
+                    freeStubs.addLast(entry.stubIndex)
+                    clearRequestCodes(instanceId, entry.stubIndex)
+                }
             }
-            RenjanaLog.i(TAG, "Cleared all stubs for instance $instanceId (${stack.size} entries)")
+            RenjanaLog.i(TAG, "Cleared all stubs for instance $instanceId ($totalCleared entries)")
         }
     }
 
@@ -355,6 +479,7 @@ object ActivityStubManager {
             occupiedStubs.clear()
             instanceStacks.clear()
             requestCodeMap.clear()
+            allocationTimes.clear()
             freeStubs.clear()
             for (i in 0 until TOTAL_STUBS) {
                 freeStubs.addLast(i)

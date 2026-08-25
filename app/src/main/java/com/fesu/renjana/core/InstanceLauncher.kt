@@ -4,14 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import com.fesu.renjana.RenjanaApplication
-import com.fesu.renjana.hooks.PineHookManager
 import com.fesu.renjana.models.Instance
 import com.fesu.renjana.utils.RenjanaLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * Carries all per-launch app data needed by [InstanceLauncher] internally.
@@ -24,6 +22,12 @@ data class InstanceLaunchData(
     val apkPath: String,
     val appName: String
 )
+
+internal fun launchInstanceGateFailure(appCount: Int): LaunchResult.Failure? = when {
+    appCount == 0 -> LaunchResult.Failure("No apps added to this instance. Add an app first.")
+    appCount > 1 -> LaunchResult.Failure("Multiple apps in this instance. Choose an app to launch.")
+    else -> null
+}
 
 /**
  * InstanceLauncher — Launches a container instance.
@@ -59,17 +63,23 @@ class InstanceLauncher(private val context: Context) {
             RenjanaApplication.get().database.instanceAppDao()
                 .getAppsForInstanceOnce(instanceId)
         }
-        return when {
-            apps.isEmpty() -> {
-                RenjanaLog.e(TAG, "No apps in instance $instanceId")
-                LaunchResult.Failure("No apps added to this instance. Add an app first.")
+        if (apps.isEmpty()) {
+            val instance = withContext(Dispatchers.IO) {
+                RenjanaApplication.get().instanceManager.getInstanceById(instanceId)
             }
-            apps.size == 1 -> launchApp(instanceId, apps.first().packageName)
-            else -> {
-                RenjanaLog.w(TAG, "Multiple apps in instance $instanceId — caller must use launchApp()")
-                LaunchResult.Failure("Multiple apps in instance — use launchApp(instanceId, packageName)")
+            if (instance != null && instance.packageName.isNotBlank()) {
+                return launchApp(instanceId, instance.packageName)
             }
         }
+        launchInstanceGateFailure(apps.size)?.let { failure ->
+            if (apps.isEmpty()) {
+                RenjanaLog.e(TAG, "No apps in instance $instanceId")
+            } else {
+                RenjanaLog.w(TAG, "Multiple apps in instance $instanceId — caller must choose an app")
+            }
+            return failure
+        }
+        return launchApp(instanceId, apps.first().packageName)
     }
 
     /**
@@ -88,11 +98,15 @@ class InstanceLauncher(private val context: Context) {
                 val appEntry = withContext(Dispatchers.IO) {
                     RenjanaApplication.get().database.instanceAppDao()
                         .getApp(instanceId, packageName)
-                } ?: return@withContext LaunchResult.Failure(
-                    "App $packageName not found in instance $instanceId"
-                )
+                }
 
-                if (appEntry.apkPath.isBlank()) {
+                val targetApkPath = appEntry?.apkPath?.ifBlank { null }
+                    ?: instance.apkPath.ifBlank { null }
+                    ?: try {
+                        context.packageManager.getApplicationInfo(packageName, 0).sourceDir
+                    } catch (_: Exception) { null }
+
+                if (targetApkPath.isNullOrBlank()) {
                     RenjanaLog.e(TAG, "App $packageName has empty apkPath in instance $instanceId — cannot launch")
                     return@withContext LaunchResult.Failure("App APK path not found. Try removing and re-adding the app.")
                 }
@@ -100,8 +114,8 @@ class InstanceLauncher(private val context: Context) {
                 val launchData = InstanceLaunchData(
                     instance = instance,
                     packageName = packageName,
-                    apkPath = appEntry.apkPath,
-                    appName = appEntry.appName
+                    apkPath = targetApkPath,
+                    appName = appEntry?.appName ?: instance.appName
                 )
 
                 RenjanaLog.i(TAG, "Launching app $packageName in instance $instanceId")
@@ -162,88 +176,33 @@ class InstanceLauncher(private val context: Context) {
      * StubActivity launch path — the DEFAULT strategy with full isolation.
      *
      * Steps:
-     * 1. Verify Pine is available (required for hooks)
-     * 2. Create an isolated VirtualClassLoader for the guest APK
-     * 3. Install Pine guest hooks (package spoof, file redirect, GMS intercept, etc.)
-     * 4. Assign Google account to instance if GMS is enabled
-     * 5. Resolve the guest's launcher Activity class name
-     * 6. Allocate a StubActivity slot via ActivityStubManager and build the launch Intent
-     * 7. Start the stub Activity
+     * 1. Register deep link schemes from the guest APK manifest
+     * 2. Resolve the guest's launcher Activity class name
+     * 3. Allocate a StubActivity slot via ActivityStubManager and build the launch Intent
+     * 4. Start the stub Activity
+     *
+     * Everything else — the guest VirtualClassLoader, Pine hooks, GMS account
+     * assignment, fingerprint spoofing, guest Application and ContentProviders —
+     * is set up by StubActivity.onCreate INSIDE the stub process (:p0-:p9), which
+     * is where the guest code actually runs. Setting it up here would only hook
+     * Renjana's own main process and leak process-global hooks into the host UI.
      *
      * @return true if the stub was launched successfully, false on any failure
      */
     private suspend fun tryStubLaunch(launchData: InstanceLaunchData): Boolean {
         val instance = launchData.instance
         return try {
-            // Pine is required for hook-based isolation
-            if (!PineHookManager.isAvailable()) {
-                RenjanaLog.w(TAG, "Pine not available, cannot use StubActivity path")
-                return false
-            }
-
-            // Create isolated classloader for guest hooks
-            val optimizedDir = File(instance.dataPath, "dex_opt")
-            if (!optimizedDir.exists()) {
-                optimizedDir.mkdirs()
-            }
-            val classLoader = VirtualClassLoader(
-                apkPath = launchData.apkPath,
-                instanceId = instance.id,
-                optimizedDir = optimizedDir,
-                parent = ClassLoader.getSystemClassLoader()
-            )
-
-            // Install Pine guest hooks (package spoof, file redirect, GMS intercept, etc.)
-            val hooksInstalled = PineHookManager.installGuestHooks(
-                launchData.packageName,
-                classLoader,
-                instance.id,
-                instance.dataPath,
-                launchData.apkPath,
-                instance = instance
-            )
-            if (!hooksInstalled) {
-                RenjanaLog.w(TAG, "Failed to install guest hooks for ${launchData.packageName}")
-                return false
-            }
-            RenjanaLog.i(TAG, "Pine guest hooks installed for ${launchData.packageName}")
-
-            // Assign Google account to instance if GMS virtualization is enabled
-            if (instance.config.enableGms) {
-                if (instance.accountId == null) {
-                    RenjanaLog.w(TAG, "GMS enabled for instance ${instance.id} but no account assigned — guest will see device account")
-                    // Do NOT block launch — continue without GMS assignment
-                } else {
-                    try {
-                        val result = withContext(Dispatchers.IO) {
-                            RenjanaApplication.get().googleSignInVirtualizer
-                                .assignAccountToInstance(instance.id, instance.accountId)
-                        }
-                        if (result.isSuccess) {
-                            RenjanaLog.i(TAG, "GMS account ${instance.accountId} assigned to instance ${instance.id}")
-                        } else {
-                            RenjanaLog.w(TAG, "Failed to assign GMS account: ${result.exceptionOrNull()?.message}")
-                        }
-                    } catch (e: Throwable) {
-                        RenjanaLog.w(TAG, "GMS account assignment failed: ${e.message}")
-                    }
-                }
-            }
-
-            // Register deep link schemes from the guest APK manifest so that
-            // incoming http/https/custom-scheme links can be routed to this instance.
+            // Register deep link schemes from the guest APK manifest
             try {
                 RenjanaApplication.get().intentRouter.filterManager
                     .registerSchemesFromApk(launchData.apkPath, instance.id)
             } catch (e: Throwable) {
-                // Non-fatal: deep link routing will simply not work for this instance
                 RenjanaLog.w(TAG, "Failed to register deep link schemes for ${launchData.packageName}: ${e.message}")
             }
 
             // Resolve the guest's launcher Activity class name
             val apkLoader = ApkLoader(context)
-            // getLauncherActivity is a suspend function that already switches to Dispatchers.IO internally.
-            val guestClassName = apkLoader.getLauncherActivity(launchData.apkPath)
+            val guestClassName = apkLoader.getLauncherActivity(launchData.apkPath, launchData.packageName)
             if (guestClassName.isNullOrEmpty()) {
                 RenjanaLog.e(TAG, "No launcher activity found in ${launchData.apkPath}")
                 return false
@@ -257,7 +216,10 @@ class InstanceLauncher(private val context: Context) {
                 guestClass = guestClassName,
                 guestIntent = null,
                 apkPath = launchData.apkPath,
-                launchMode = ActivityStubManager.LAUNCH_STANDARD
+                launchMode = ActivityStubManager.LAUNCH_STANDARD,
+                instance = instance,
+                targetPackageName = launchData.packageName,
+                targetAppName = launchData.appName
             )
             if (stubIntent == null) {
                 RenjanaLog.e(TAG, "No free StubActivity slots available for ${launchData.packageName}")
@@ -266,6 +228,18 @@ class InstanceLauncher(private val context: Context) {
 
             stubIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(stubIntent)
+
+            // Register per-app runtime state (the stub's report-to-service is the
+            // authoritative registration; this covers the window until it fires).
+            val stubIndex = stubIntent.getIntExtra(StubActivity.EXTRA_STUB_INDEX, -1)
+            if (stubIndex >= 0) {
+                AppRuntimeRegistry.register(
+                    instanceId = instance.id,
+                    packageName = launchData.packageName,
+                    appName = launchData.appName,
+                    stubIndex = stubIndex
+                )
+            }
             true
         } catch (e: Throwable) {
             RenjanaLog.e(TAG, "tryStubLaunch failed for ${launchData.packageName}: ${e.message}")

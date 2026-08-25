@@ -1,44 +1,44 @@
 # Home Screen
 
-Layar utama Renjana. Menampilkan daftar semua instance virtual yang telah dibuat.
+Layar utama Renjana yang menampilkan dashboard overview dan daftar seluruh instance virtual container yang aktif maupun idle.
 
 ---
 
-## Tampilan
+## 🎨 Tampilan UI
 
 | Elemen | Deskripsi |
-|---|---|
-| List / Grid toggle | Ubah tampilan antara list vertikal dan grid 2 kolom |
-| StatHeader | Ringkasan jumlah instance aktif vs total |
-| Instance card | Ikon app, nama instance, status, dan tanggal dibuat |
-| FAB (+) | Tombol buat instance baru di pojok kanan bawah |
+| :--- | :--- |
+| **Stat Header** | Ringkasan metrik: Jumlah container aktif vs total instance |
+| **List / Grid Toggle** | Mengubah mode tampilan antara list vertikal ringkas atau grid 2 kolom |
+| **Instance Card** | Menampilkan ikon app (atau mini grid 2x2 multi-app), nama container, status badge, dan tanggal pembuatan |
+| **FAB (+)** | Floating Action Button untuk membuka wizard pembuatan instance baru |
 
 ---
 
-## Aksi
+## 🎮 Aksi Cepat
 
-| Aksi | Cara |
-|---|---|
-| Buat instance baru | Tap FAB **+** → pilih app dari AppsScreen |
-| Jalankan instance | Tap tombol **▶ Play** pada card |
-| Hentikan instance | Tap tombol **⏹ Stop** pada card yang sedang berjalan |
-| Buka detail instance | Tap pada card instance |
-| Edit nama instance | Long-press card → pilih **Edit** |
-| Hapus instance | Long-press card → pilih **Delete** |
-
----
-
-## Status Instance
-
-| Status | Warna | Keterangan |
-|---|---|---|
-| Running | 🟢 Hijau | Instance sedang aktif berjalan |
-| Paused | 🟡 Kuning | Instance dijeda |
-| Idle | ⚫ Abu | Instance tidak aktif |
+| Aksi | Interaksi |
+| :--- | :--- |
+| **Buat Instance Baru** | Tap FAB **+** ➔ Pilih aplikasi pada `AppsScreen` |
+| **Jalankan Container** | Tap tombol **▶ Play** pada card container |
+| **Hentikan Container** | Tap tombol **⏹ Stop** pada card container yang sedang aktif |
+| **Buka Manajemen Instance** | Tap body card container untuk masuk ke `InstanceDetailScreen` |
+| **Edit / Hapus Instance** | Long-press card container ➔ Pilih menu konteks **Edit** atau **Delete** |
 
 ---
 
-## Navigasi
+## 🚦 Indikator Status Container
 
-- Tap card → `InstanceDetailScreen`
-- FAB (+) → `AppsScreen`
+| Status | Indikator | Arti Status |
+| :--- | :---: | :--- |
+| **Running** | 🟢 Hijau | Container dan proses guest sedang aktif berjalan di subprocess (`:p0`–`:p9`) |
+| **Paused** | 🟡 Kuning | Container dalam keadaan paused / background |
+| **Idle** | ⚫ Abu-abu | Container dalam keadaan mati / belum dijalankan |
+
+---
+
+## 🧭 Alur Navigasi
+
+- **Tap Card** ➔ Buka [`InstanceDetailScreen`](INSTANCE_DETAIL.md)
+- **Tap FAB (+)** ➔ Buka [`AppsScreen`](APPS.md)
+

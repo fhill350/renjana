@@ -4,15 +4,64 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Outer Ambient Glow -->
+    <path
+        android:fillColor="#00F0FF"
+        android:fillAlpha="0.12"
+        android:pathData="M54,22 L82,38 L82,70 L54,86 L26,70 L26,38 Z" />
+
+    <!-- Isometric Container Outer Hull - Top Face -->
+    <path
+        android:fillColor="#1E293B"
+        android:strokeColor="#38BDF8"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M54,25 L80,40 L54,55 L28,40 Z" />
+
+    <!-- Isometric Container Outer Hull - Left Face -->
+    <path
+        android:fillColor="#0F172A"
+        android:strokeColor="#0EA5E9"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M28,40 L54,55 L54,83 L28,68 Z" />
+
+    <!-- Isometric Container Outer Hull - Right Face -->
+    <path
+        android:fillColor="#090D16"
+        android:strokeColor="#0284C7"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M54,55 L80,40 L80,68 L54,83 Z" />
+
+    <!-- Inner Core Cube - Top Face (Neon Cyan Glow) -->
+    <path
+        android:fillColor="#38BDF8"
+        android:fillAlpha="0.9"
+        android:pathData="M54,39 L66,46 L54,53 L42,46 Z" />
+
+    <!-- Inner Core Cube - Left Face -->
+    <path
+        android:fillColor="#0EA5E9"
+        android:fillAlpha="0.85"
+        android:pathData="M42,46 L54,53 L54,67 L42,60 Z" />
+
+    <!-- Inner Core Cube - Right Face -->
+    <path
+        android:fillColor="#0284C7"
+        android:fillAlpha="0.8"
+        android:pathData="M54,53 L66,46 L66,60 L54,67 Z" />
+
+    <!-- Cyber Circuit Accents & Container Ports -->
+    <path
+        android:strokeColor="#00F0FF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M54,31 L54,39 M36,44 L42,47 M72,44 L66,47 M35,63 L42,59 M73,63 L66,59 M54,75 L54,67" />
+
+    <!-- Center Data Vertex Pulse -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M54,30 L54,78 M30,54 L78,54"
-        android:strokeWidth="8"
-        android:strokeColor="#FFFFFF"/>
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M36,36 L72,72 M72,36 L36,72"
-        android:strokeWidth="4"
-        android:strokeColor="#FFFFFF"
-        android:strokeAlpha="0.5"/>
+        android:pathData="M54,51 A2,2 0 1,0 54,55 A2,2 0 1,0 54,51" />
 </vector>

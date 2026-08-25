@@ -37,11 +37,30 @@ import java.io.FileOutputStream
  * @param hostContext the real application/host context, used for non-storage delegation.
  * @param dataPath    absolute instance data path. Must equal [com.fesu.renjana.models.Instance.dataPath]
  *                    (i.e. the path InstanceManager recorded for this instance).
+ * @param guestPackageName the guest app's package name. When set, the guest sees its own
+ *                    package in [getPackageName] — critical for PackageManager lookups and
+ *                    SDK initialization (Firebase keys off the package name).
  */
 class VirtualContext(
     hostContext: Context,
-    private val dataPath: String
+    private val dataPath: String,
+    private val guestPackageName: String? = null
 ) : ContextWrapper(hostContext) {
+
+    /**
+     * The guest's own [android.app.Application], assigned once the stub process has
+     * constructed it. Guest code doing `context.applicationContext as MyApplication`
+     * then receives the guest app, not Renjana's host Application.
+     */
+    var guestApplication: android.app.Application? = null
+
+    /**
+     * The guest's merged Resources (base + split APKs). Without this, delegation
+     * falls through to the HOST resources — guest Application/SDK initialization
+     * that reads manifest resource IDs (Firebase's `google_app_id`, analytics
+     * config, etc.) then dies with `Resources$NotFoundException`.
+     */
+    var guestResources: android.content.res.Resources? = null
 
     companion object {
         private const val TAG = "VirtualCtx"
@@ -230,6 +249,33 @@ class VirtualContext(
         }
     }
 
+    // ── Guest identity ───────────────────────────────────────────────────────
+
+    override fun getPackageName(): String {
+        // The guest must believe it is its own package: PackageManager hooks key off
+        // this name to return the guest's PackageInfo/signature, and SDKs like
+        // Firebase use it for per-app initialization.
+        guestPackageName?.let { return it }
+        return super.getPackageName()
+    }
+
+    override fun getApplicationContext(): Context {
+        // Guest Application once constructed; before that, fall back to the host
+        // (matches framework behavior where providers attach before app.onCreate).
+        guestApplication?.let { return it }
+        return super.getApplicationContext()
+    }
+
+    override fun getResources(): android.content.res.Resources {
+        guestResources?.let { return it }
+        return super.getResources()
+    }
+
+    override fun getAssets(): android.content.res.AssetManager {
+        guestResources?.let { return it.assets }
+        return super.getAssets()
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /**
@@ -256,7 +302,7 @@ class VirtualContext(
 
     private fun ensureDir(dir: File?) {
         if (dir == null) return
-        if (!dir.exists() && !dir.mkdirs()) {
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
             // Don't throw — a getter that fails to mkdir would crash the guest at odd
             // times. Log and let the subsequent I/O call surface a clearer error.
             RenjanaLog.w(TAG, "Could not create virtual directory: ${dir.absolutePath}")

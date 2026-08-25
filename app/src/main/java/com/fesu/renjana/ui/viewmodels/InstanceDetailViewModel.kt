@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -28,6 +29,11 @@ data class RandomizedProfile(
     val serial: String,
     val imei: String,
     val buildFingerprint: String
+)
+
+data class InstanceLaunchEligibility(
+    val appCount: Int = 0,
+    val canLaunchInstance: Boolean = false
 )
 
 class InstanceDetailViewModel(
@@ -63,10 +69,62 @@ class InstanceDetailViewModel(
         instanceManager.getAppsForInstance(instanceId)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /**
+     * Per-app runtime state for THIS instance, derived from AppRuntimeRegistry.
+     * The registry reconciles against live processes on every emission, so badges
+     * stay accurate even when a guest crashes on its own.
+     */
+    val runningApps: StateFlow<List<com.fesu.renjana.core.AppRuntimeRegistry.RunningApp>> =
+        com.fesu.renjana.core.AppRuntimeRegistry.runningApps
+            .map { apps -> apps.filter { it.instanceId == instanceId } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun isAppRunning(packageName: String): Boolean =
+        runningApps.value.any { it.packageName == packageName }
+
+    /** Bring an already-running app back to the foreground. */
+    fun openApp(packageName: String) {
+        val app = runningApps.value.firstOrNull { it.packageName == packageName } ?: return
+        com.fesu.renjana.core.AppRuntimeRegistry.openApp(
+            RenjanaApplication.get(), app
+        )
+    }
+
+    /** Close one running app (its stub task is finished; the process exits). */
+    fun closeApp(packageName: String) {
+        val app = runningApps.value.firstOrNull { it.packageName == packageName } ?: return
+        com.fesu.renjana.core.AppRuntimeRegistry.closeApp(
+            RenjanaApplication.get(), app
+        )
+    }
+
+    val launchEligibility: StateFlow<InstanceLaunchEligibility> =
+        kotlinx.coroutines.flow.combine(instanceApps, _instance) { apps, inst ->
+            val effectiveCount = if (apps.isEmpty() && !inst?.packageName.isNullOrBlank()) 1 else apps.size
+            InstanceLaunchEligibility(
+                appCount = effectiveCount,
+                canLaunchInstance = effectiveCount == 1
+            )
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            InstanceLaunchEligibility(canLaunchInstance = true, appCount = 1)
+        )
+
     fun launchApp(packageName: String) {
         viewModelScope.launch {
             try {
-                instanceLauncher.launchApp(instanceId, packageName)
+                when (val result = instanceLauncher.launchApp(instanceId, packageName)) {
+                    is com.fesu.renjana.core.LaunchResult.Success -> {
+                        _actionSuccess.value = "App launched"
+                    }
+                    is com.fesu.renjana.core.LaunchResult.FallbackNoIsolation -> {
+                        _actionSuccess.value = "⚠️ Running without isolation: ${result.reason}"
+                    }
+                    is com.fesu.renjana.core.LaunchResult.Failure -> {
+                        _error.value = result.message
+                    }
+                }
             } catch (e: Exception) {
                 RenjanaLog.e(TAG, "Failed to launch app $packageName: ${e.message}")
                 _error.value = e.message ?: "Failed to launch app"
@@ -97,6 +155,14 @@ class InstanceDetailViewModel(
 
     init {
         loadInstance()
+        // Reconcile runtime state against live processes every 5s so running
+        // badges stay truthful without any manual refresh.
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000)
+                com.fesu.renjana.core.AppRuntimeRegistry.refresh()
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

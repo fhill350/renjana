@@ -17,13 +17,16 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
@@ -56,6 +59,7 @@ import com.fesu.renjana.core.InstanceState
 import com.fesu.renjana.core.DeviceDatabase
 import com.fesu.renjana.database.InstanceAppEntity
 import com.fesu.renjana.ui.components.AppIcon
+import com.fesu.renjana.ui.components.EmptyStateIllustration
 import com.fesu.renjana.ui.components.Haptics
 import com.fesu.renjana.ui.components.RunningIndicator
 import com.fesu.renjana.ui.components.rememberHaptics
@@ -99,6 +103,7 @@ fun InstanceDetailScreen(
     val error by viewModel.error.collectAsState()
     val actionSuccess by viewModel.actionSuccess.collectAsState()
     val isDeleted by viewModel.isDeleted.collectAsState()
+    val launchEligibility by viewModel.launchEligibility.collectAsState()
 
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -109,15 +114,15 @@ fun InstanceDetailScreen(
     var selectedTab by remember { mutableStateOf(DetailTab.OVERVIEW) }
     val haptics = rememberHaptics()
     var shortcutMessage by remember { mutableStateOf<String?>(null) }
+    var showStopConfirm by remember { mutableStateOf(false) }
 
-    // Poll running state
+    // Per-app runtime state, reconciled against live processes by the ViewModel
+    val runningApps by viewModel.runningApps.collectAsState()
+
+    // Running state derives from live apps — accurate for multi-app instances
     var runningState by remember { mutableStateOf<InstanceState>(InstanceState.IDLE) }
-    LaunchedEffect(instanceId) {
-        while (true) {
-            runningState = RenjanaApplication.get().lifecycleService
-                ?.getInstanceState(instanceId) ?: InstanceState.IDLE
-            kotlinx.coroutines.delay(2000)
-        }
+    LaunchedEffect(runningApps) {
+        runningState = if (runningApps.isNotEmpty()) InstanceState.RUNNING else InstanceState.IDLE
     }
 
     LaunchedEffect(isDeleted) { if (isDeleted) onNavigateBack() }
@@ -129,6 +134,14 @@ fun InstanceDetailScreen(
     }
     LaunchedEffect(shortcutMessage) {
         shortcutMessage?.let { snackbarHostState.showSnackbar(it); shortcutMessage = null }
+    }
+
+    if (showStopConfirm) {
+        com.fesu.renjana.ui.components.StopConfirmDialog(
+            what = viewModel.instance.value?.appName ?: "this instance",
+            onConfirm = { showStopConfirm = false; viewModel.stopInstance() },
+            onDismiss = { showStopConfirm = false }
+        )
     }
 
     if (showDeleteDialog) {
@@ -200,7 +213,7 @@ fun InstanceDetailScreen(
                             } catch (e: Exception) { MaterialTheme.colorScheme.primary }
                             Box(
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(48.dp)
                                     .clip(CircleShape)
                                     .background(parsedColor)
                                     .then(
@@ -210,14 +223,15 @@ fun InstanceDetailScreen(
                                             CircleShape
                                         ) else Modifier
                                     )
-                                    .clickable { pendingColor = hex },
+                                    .clickable(onClickLabel = "Use $name accent color") { pendingColor = hex },
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (selected) {
-                                    Text(
-                                        "✓",
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        fontSize = 12.sp
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = "$name selected",
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
@@ -226,7 +240,7 @@ fun InstanceDetailScreen(
                         item {
                             Box(
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(48.dp)
                                     .clip(CircleShape)
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .then(
@@ -236,7 +250,7 @@ fun InstanceDetailScreen(
                                             CircleShape
                                         ) else Modifier
                                     )
-                                    .clickable { pendingColor = null },
+                                    .clickable(onClickLabel = "Remove accent color") { pendingColor = null },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -318,12 +332,7 @@ fun InstanceDetailScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
-            // ── Hero Header with gradient ──
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shadowElevation = 4.dp,
-                color = androidx.compose.ui.graphics.Color.Transparent
-            ) {
+            // ── Hero Header with gradient (single layer — no nested surface box) ──
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -388,17 +397,19 @@ fun InstanceDetailScreen(
                                 )
                             }
                             Text(
-                                text = inst.packageName,
+                                text = if (inst.packageName.isNotBlank()) inst.packageName else "Container (${launchEligibility.appCount} apps)",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Text(
-                                text = "v${inst.versionName}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            if (inst.versionName.isNotBlank()) {
+                                Text(
+                                    text = "v${inst.versionName}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             Text(
                                 text = runningState.name.lowercase().replaceFirstChar { it.uppercase() },
                                 style = MaterialTheme.typography.labelMedium,
@@ -413,7 +424,7 @@ fun InstanceDetailScreen(
                     Spacer(modifier = Modifier.height(20.dp))
                     if (runningState == InstanceState.RUNNING || runningState == InstanceState.PAUSED) {
                         Button(
-                            onClick = { haptics.confirm(); viewModel.stopInstance() },
+                            onClick = { haptics.confirm(); showStopConfirm = true },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                             modifier = Modifier.fillMaxWidth().height(48.dp),
                             shape = RoundedCornerShape(14.dp)
@@ -423,19 +434,45 @@ fun InstanceDetailScreen(
                             Text("Stop", style = MaterialTheme.typography.labelLarge)
                         }
                     } else {
+                        val appCount = launchEligibility.appCount
                         Button(
-                            onClick = { haptics.confirm(); viewModel.launchInstance() },
+                            onClick = {
+                                haptics.confirm()
+                                when {
+                                    launchEligibility.canLaunchInstance -> viewModel.launchInstance()
+                                    appCount == 0 -> onNavigateToAddApp(inst.id)
+                                    else -> selectedTab = DetailTab.APPS
+                                }
+                            },
                             modifier = Modifier.fillMaxWidth().height(48.dp),
                             shape = RoundedCornerShape(14.dp)
                         ) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Launch Instance", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                when (appCount) {
+                                    0 -> "Add App to Launch"
+                                    1 -> "Launch Instance"
+                                    else -> "Choose App to Launch"
+                                },
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        if (!launchEligibility.canLaunchInstance) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = if (appCount == 0) {
+                                    "Add an app to this Instance before launching."
+                                } else {
+                                    "This Instance has multiple apps. Use a play button in Apps."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
             }
-            } // end Surface
 
             // ── Tab Bar ──
             val tabs = DetailTab.values()
@@ -565,43 +602,151 @@ fun InstanceDetailScreen(
                 DetailTab.APPS -> {
                     val instanceApps by viewModel.instanceApps.collectAsState()
                     var pendingRemovePackage by remember { mutableStateOf<String?>(null) }
+                    var pendingClosePackage by remember { mutableStateOf<String?>(null) }
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp)
                     ) {
-                        instanceApps.forEach { app ->
-                            ListItem(
-                                headlineContent = { Text(app.appName) },
-                                supportingContent = {
-                                    Text(
-                                        app.packageName,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
+                        if (instanceApps.isEmpty()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                EmptyStateIllustration(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                )
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Text(
+                                    text = "No apps in this Instance",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Add an app before launching this Instance",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = if (instanceApps.size == 1) {
+                                    "Use the play button to launch this app."
+                                } else {
+                                    "Use each app's play button to launch it in this Instance."
                                 },
-                                leadingContent = {
-                                    AppIcon(
-                                        packageName = app.packageName,
-                                        size = 44.dp,
-                                        showRenjanaBadge = false
-                                    )
-                                },
-                                trailingContent = {
-                                    Row {
-                                        IconButton(onClick = { viewModel.launchApp(app.packageName) }) {
-                                            Icon(Icons.Filled.PlayArrow, contentDescription = "Launch")
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                            instanceApps.forEach { app ->
+                                val running = runningApps.firstOrNull { it.packageName == app.packageName }
+                                val runDuration = running?.let {
+                                    val mins = (System.currentTimeMillis() - it.startedAt) / 60_000
+                                    if (mins < 1) "just now" else "for $mins min"
+                                }
+                                ListItem(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            if (running != null) viewModel.openApp(app.packageName)
+                                            else viewModel.launchApp(app.packageName)
+                                        },
+                                    headlineContent = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(app.appName, fontWeight = FontWeight.Medium)
+                                            if (running != null) {
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                RunningIndicator(isRunning = true, isPaused = false, size = 8.dp)
+                                            }
                                         }
-                                        IconButton(onClick = { pendingRemovePackage = app.packageName }) {
-                                            Icon(
-                                                Icons.Filled.Delete,
-                                                contentDescription = "Remove",
-                                                tint = MaterialTheme.colorScheme.error
+                                    },
+                                    supportingContent = {
+                                        Column {
+                                            Text(
+                                                app.packageName,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                            Text(
+                                                text = if (running != null) "Running $runDuration" else "Stopped",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (running != null) MaterialTheme.colorScheme.primary
+                                                else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
+                                    },
+                                    leadingContent = {
+                                        AppIcon(
+                                            packageName = app.packageName,
+                                            size = 44.dp,
+                                            showRenjanaBadge = false
+                                        )
+                                    },
+                                    trailingContent = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (running != null) {
+                                                FilledIconButton(
+                                                    onClick = { viewModel.openApp(app.packageName) },
+                                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    ),
+                                                    modifier = Modifier.size(36.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.OpenInNew,
+                                                        contentDescription = "Open ${app.appName}",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                IconButton(
+                                                    onClick = { pendingClosePackage = app.packageName },
+                                                    modifier = Modifier.size(36.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.Close,
+                                                        contentDescription = "Close ${app.appName}",
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+                                            } else {
+                                                FilledIconButton(
+                                                    onClick = { viewModel.launchApp(app.packageName) },
+                                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    ),
+                                                    modifier = Modifier.size(36.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.PlayArrow,
+                                                        contentDescription = "Launch ${app.appName}",
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                IconButton(
+                                                    onClick = { pendingRemovePackage = app.packageName },
+                                                    modifier = Modifier.size(36.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.Delete,
+                                                        contentDescription = "Remove ${app.appName}",
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
-                                }
-                            )
-                            Divider()
+                                )
+                                Divider(modifier = Modifier.padding(horizontal = 8.dp))
+                            }
                         }
                         OutlinedButton(
                             onClick = { onNavigateToAddApp(inst.id) },
@@ -627,6 +772,14 @@ fun InstanceDetailScreen(
                                 dismissButton = {
                                     TextButton(onClick = { pendingRemovePackage = null }) { Text("Cancel") }
                                 }
+                            )
+                        }
+                        pendingClosePackage?.let { pkg ->
+                            val appLabel = instanceApps.firstOrNull { it.packageName == pkg }?.appName ?: pkg
+                            com.fesu.renjana.ui.components.StopConfirmDialog(
+                                what = appLabel,
+                                onConfirm = { viewModel.closeApp(pkg); pendingClosePackage = null },
+                                onDismiss = { pendingClosePackage = null }
                             )
                         }
                     }
@@ -958,7 +1111,10 @@ private fun DeviceSpoofSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { extendedExpanded = !extendedExpanded }
+                .heightIn(min = 48.dp)
+                .clickable(onClickLabel = if (extendedExpanded) "Collapse extended fingerprint" else "Expand extended fingerprint") {
+                    extendedExpanded = !extendedExpanded
+                }
                 .padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -1083,6 +1239,7 @@ private fun SpoofTextField(
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
+            label = { Text(label) },
             placeholder = { Text(placeholder) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),

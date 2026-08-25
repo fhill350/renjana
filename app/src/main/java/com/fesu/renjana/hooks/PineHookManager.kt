@@ -12,6 +12,7 @@ import com.fesu.renjana.virtual.GuestInfoCache
 import dalvik.system.DexClassLoader
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
+import de.robv.android.xposed.XposedHelpers
 import top.canyie.pine.PineConfig
 import java.io.File
 import java.lang.reflect.Member
@@ -66,6 +67,13 @@ object PineHookManager {
         }
 
         try {
+            // Unseal hidden-API restrictions FIRST — it must happen with or without
+            // Pine, because StubActivity's framework reflection (Application.attach,
+            // Activity field injection, AssetManager.addAssetPath, ...) runs even in
+            // fallback mode. Pine performs its own unsealing when it initializes, but
+            // the no-Pine path still needs ours.
+            unsealHiddenApi()
+
             // Pine is bundled — verify the native library loaded by checking the class exists.
             pineAvailable = try {
                 val pineClass = Class.forName("top.canyie.pine.Pine")
@@ -105,6 +113,35 @@ object PineHookManager {
     }
 
     fun isAvailable(): Boolean = pineAvailable
+
+    /**
+     * Lift hidden-API restrictions for the whole process (API 28+).
+     *
+     * StubActivity relies on framework reflection (Application.attach, Activity
+     * field injection, AssetManager.addAssetPath, ...) which is blocked by the
+     * hidden-API allowlist on modern Android. The classic double-reflection
+     * bypass makes the exempting calls appear to originate from java.lang.Class
+     * (boot classpath), which is always permitted. Exempting "L" unseals every
+     * method signature prefix.
+     */
+    private fun unsealHiddenApi() {
+        try {
+            val forName = Class::class.java.getDeclaredMethod("forName", String::class.java)
+            val getDeclaredMethod = Class::class.java.getDeclaredMethod(
+                "getDeclaredMethod", String::class.java, arrayOf<Class<*>>()::class.java
+            )
+            val vmRuntimeClass = forName.invoke(null, "dalvik.system.VMRuntime") as Class<*>
+            val getRuntime = getDeclaredMethod.invoke(vmRuntimeClass, "getRuntime", null) as Method
+            val setHiddenApiExemptions = getDeclaredMethod.invoke(
+                vmRuntimeClass, "setHiddenApiExemptions", arrayOf(arrayOf<String>()::class.java)
+            ) as Method
+            val runtime = getRuntime.invoke(null)
+            setHiddenApiExemptions.invoke(runtime, arrayOf("L"))
+            RenjanaLog.i(TAG, "Hidden API restrictions unsealed")
+        } catch (e: Throwable) {
+            RenjanaLog.w(TAG, "Hidden API unseal failed (reflection may be restricted): ${e.message}")
+        }
+    }
 
     /**
      * Install all guest-app hooks for a specific instance.
@@ -226,6 +263,35 @@ object PineHookManager {
                     hooksInstalled++
                 }
 
+                // When GMS virtualization is OFF for this instance, make Google Play
+                // Services appear UNAVAILABLE to the guest — the de-Googled-device
+                // experience. Without this, GMS client code connects to the real
+                // broker, which rejects the guest package at the remote UID check
+                // ("Unknown calling package name") and the resulting
+                // SecurityException kills the process when it reaches the
+                // measurement module's main-thread handler. With GMS "missing",
+                // Firebase falls back to its direct-HTTPS paths instead.
+                if (instance == null || !instance.config.enableGms) {
+                    if (installGmsUnavailableHooks(classLoader)) {
+                        hooksInstalled++
+                    }
+                    // Block the GMS broker connection itself — availability checks
+                    // alone don't stop GoogleApiManager from binding.
+                    try {
+                        val contextImplClass = Class.forName("android.app.ContextImpl")
+                        for (m in contextImplClass.declaredMethods) {
+                            if (!m.name.startsWith("bindService")) continue
+                            if (!m.parameterTypes.contains(Intent::class.java)) continue
+                            if (m.returnType != Boolean::class.javaPrimitiveType) continue
+                            if (safeHook(m, CoreHooks.createBindServiceGmsBlockHook(), "ContextImpl.${m.name}")) {
+                                hooksInstalled++
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        RenjanaLog.w(TAG, "Failed to hook bindService: ${e.message}")
+                    }
+                }
+
                 // L4: never report success when zero hooks are actually live.
                 if (hooksInstalled == 0) {
                     RenjanaLog.w(TAG, "Zero hooks installed despite Pine available")
@@ -261,6 +327,45 @@ object PineHookManager {
                 RenjanaLog.e(TAG, "Failed to uninstall Pine guest hooks: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Make Google Play Services appear unavailable to the guest (used when the
+     * instance has GMS virtualization disabled). Hooks every
+     * `isGooglePlayServicesAvailability`-style lookup on the GMS availability
+     * classes bundled in the guest's own dex, returning SERVICE_MISSING (1).
+     *
+     * Semantics: identical to running on a de-Googled device, where Firebase and
+     * GMS-aware apps fall back to non-GMS paths instead of trying to reach the
+     * (rejecting) broker.
+     */
+    private fun installGmsUnavailableHooks(classLoader: ClassLoader): Boolean {
+        val availabilityClasses = listOf(
+            "com.google.android.gms.common.GoogleApiAvailability",
+            "com.google.android.gms.common.GoogleApiAvailabilityLight",
+            "com.google.android.gms.common.GooglePlayServicesUtil"
+        )
+        var installed = 0
+        val replacement = object : de.robv.android.xposed.XC_MethodReplacement() {
+            override fun replaceHookedMethod(param: XC_MethodHook.MethodHookParam): Any =
+                1 // ConnectionResult.SERVICE_MISSING
+        }
+        for (className in availabilityClasses) {
+            try {
+                val clazz = XposedHelpers.findClass(className, classLoader)
+                for (method in clazz.declaredMethods) {
+                    if (method.returnType != Int::class.javaPrimitiveType) continue
+                    if (!method.name.contains("GooglePlayServicesAvailable", ignoreCase = true)) continue
+                    if (safeHook(method, replacement, "$className.${method.name}")) {
+                        installed++
+                    }
+                }
+            } catch (_: Throwable) {
+                // Class not bundled by this guest — fine.
+            }
+        }
+        RenjanaLog.i(TAG, "GMS marked unavailable for guest ($installed availability hooks)")
+        return installed > 0
     }
 
     // ── Hook installation helpers ──────────────────────────────────────────
@@ -394,6 +499,22 @@ object PineHookManager {
             )
             safeHook(getInstalledPackages, CoreHooks.createGetInstalledPackagesHook(),
                 "ApplicationPackageManager.getInstalledPackages")
+
+            // ── getApplicationInfo / getApplicationInfoAsUser / getPackagesForUid ──
+            // Found via method ENUMERATION (some overloads are hidden API whose
+            // by-name lookup is blocked on Android 15). The uid spoof makes GMS
+            // in-process client checks ("Unknown calling package name") pass for
+            // guest packages running under Renjana's UID.
+            for (m in appPmClass.declaredMethods) {
+                when (m.name) {
+                    "getApplicationInfo", "getApplicationInfoAsUser" ->
+                        safeHook(m, CoreHooks.createGetApplicationInfoHook(),
+                            "ApplicationPackageManager.${m.name}")
+                    "getPackagesForUid" ->
+                        safeHook(m, CoreHooks.createGetPackagesForUidHook(),
+                            "ApplicationPackageManager.getPackagesForUid")
+                }
+            }
         } catch (e: Throwable) {
             RenjanaLog.w(TAG, "Failed to hook PackageManager: ${e.message}")
         }

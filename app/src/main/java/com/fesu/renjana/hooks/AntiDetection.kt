@@ -80,8 +80,8 @@ object AntiDetection {
 
         // Register container paths that must be hidden
         containerPaths.add(dataPath)
-        containerPaths.add("/data/data/com.renjana.container")
-        containerPaths.add("/data/user/0/com.renjana.container")
+        containerPaths.add("/data/data/com.fesu.renjana")
+        containerPaths.add("/data/user/0/com.fesu.renjana")
 
         // Add instance-specific paths
         val instanceDir = File(dataPath)
@@ -281,8 +281,8 @@ object AntiDetection {
     fun filterPackageList(packages: List<String>): List<String> {
         return packages.filter { pkg ->
             !isHookFrameworkPackage(pkg) &&
-            pkg != "com.renjana.container" &&
-            !pkg.startsWith("com.renjana.container.")
+            pkg != "com.fesu.renjana" &&
+            !pkg.startsWith("com.fesu.renjana.")
         }
     }
 
@@ -303,7 +303,7 @@ object AntiDetection {
 
         // Replace container class references with standard Android classes
         return filtered.map { element ->
-            if (element.className.startsWith("com.renjana.")) {
+            if (element.className.startsWith("com.fesu.renjana.")) {
                 StackTraceElement(
                     "android.app.ActivityThread",
                     element.methodName,
@@ -341,10 +341,7 @@ object AntiDetection {
      * @return true if access should be blocked
      */
     fun shouldBlockReflection(className: String): Boolean {
-        return className.startsWith("com.renjana.container.") ||
-                className.startsWith("com.renjana.container.hooks.") ||
-                className.startsWith("com.renjana.container.core.") ||
-                className.startsWith("com.renjana.container.virtual.") ||
+        return className.startsWith("com.fesu.renjana.") ||
                 isHookFrameworkClass(className)
     }
 
@@ -373,8 +370,11 @@ object AntiDetection {
      * @return Spoofed external storage path
      */
     fun getSpoofedExternalPath(instanceId: String): String {
-        return "/storage/emulated/0/Android/data/com.renjana.container/files/$instanceId"
+        return "/storage/emulated/0/Android/data/com.fesu.renjana/files/$instanceId"
     }
+
+    private const val EXT_STORAGE_0 = "/storage/emulated/0"
+    private const val SDCARD_PREFIX = "/sdcard"
 
     /**
      * Rewrite a path from the guest app's perspective to the virtual filesystem.
@@ -389,21 +389,30 @@ object AntiDetection {
         val dataPrefix = "/data/data/$originalPackageName"
         if (originalPath.startsWith(dataPrefix)) {
             val subPath = originalPath.removePrefix(dataPrefix)
-            return "/data/data/com.renjana.container/files/$instanceId/data$subPath"
+            return "/data/data/com.fesu.renjana/files/$instanceId/data$subPath"
+        }
+
+        val user0Prefix = "/data/user/0/$originalPackageName"
+        if (originalPath.startsWith(user0Prefix)) {
+            val subPath = originalPath.removePrefix(user0Prefix)
+            return "/data/data/com.fesu.renjana/files/$instanceId/data$subPath"
         }
 
         // Rewrite external storage
-        val extPrefix = Environment.getExternalStorageDirectory().absolutePath
-        if (originalPath.startsWith(extPrefix)) {
-            val subPath = originalPath.removePrefix(extPrefix)
-            return "/data/data/com.renjana.container/files/$instanceId/external$subPath"
+        if (originalPath.startsWith(EXT_STORAGE_0)) {
+            val subPath = originalPath.removePrefix(EXT_STORAGE_0)
+            return "/data/data/com.fesu.renjana/files/$instanceId/external$subPath"
+        }
+        if (originalPath.startsWith(SDCARD_PREFIX)) {
+            val subPath = originalPath.removePrefix(SDCARD_PREFIX)
+            return "/data/data/com.fesu.renjana/files/$instanceId/external$subPath"
         }
 
         // Rewrite cache directory
         val cachePrefix = "/data/data/$originalPackageName/cache"
         if (originalPath.startsWith(cachePrefix)) {
             val subPath = originalPath.removePrefix(cachePrefix)
-            return "/data/data/com.renjana.container/files/$instanceId/cache$subPath"
+            return "/data/data/com.fesu.renjana/files/$instanceId/cache$subPath"
         }
 
         return originalPath

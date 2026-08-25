@@ -23,6 +23,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -118,10 +121,17 @@ fun SettingsScreen(
                         val isSelected = accentColor == option.color
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
                                 .background(option.color)
-                                .clickable { onAccentChange(option.color) },
+                                .semantics {
+                                    contentDescription = "${option.name} accent color"
+                                    selected = isSelected
+                                }
+                                .clickable(
+                                    onClickLabel = "Use ${option.name} accent color",
+                                    onClick = { onAccentChange(option.color) }
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             if (isSelected) {

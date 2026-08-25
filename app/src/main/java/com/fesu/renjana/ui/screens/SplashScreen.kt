@@ -142,32 +142,32 @@ fun SplashScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            // Animated glow dot + arc
+            // Animated container logo
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier.size(72.dp),
+                modifier = Modifier.size(88.dp),
             ) {
+                // Rotating arc ring
+                Canvas(
+                    modifier = Modifier.size(88.dp),
+                ) {
+                    drawArcRing(
+                        rotation = arcRotation,
+                        color    = SplashPrimary,
+                        alpha    = 0.4f,
+                    )
+                }
+                // Isometric Container Vault Canvas
                 Canvas(
                     modifier = Modifier
                         .size(72.dp)
                         .scale(pulseScale),
                 ) {
-                    drawGlowDot(
-                        center    = center,
-                        coreColor = SplashPrimary,
-                        glowColor = SplashAccent,
-                        alpha     = pulseAlpha,
-                    )
-                }
-                // Rotating arc ring
-                Canvas(
-                    modifier = Modifier
-                        .size(72.dp),
-                ) {
-                    drawArcRing(
-                        rotation = arcRotation,
-                        color    = SplashPrimary,
-                        alpha    = 0.35f,
+                    drawContainerVault(
+                        center     = center,
+                        primary    = SplashPrimary,
+                        accent     = SplashAccent,
+                        pulseAlpha = pulseAlpha,
                     )
                 }
             }
@@ -193,7 +193,7 @@ fun SplashScreen(
 
             // Tagline
             Text(
-                text     = "Container Engine",
+                text     = "Virtual Container Engine",
                 modifier = Modifier.alpha(tagAlpha.value),
                 style = TextStyle(
                     fontFamily    = BodyFont,
@@ -226,30 +226,78 @@ private fun DrawScope.drawRadialGlow(
     )
 }
 
-private fun DrawScope.drawGlowDot(
+private fun DrawScope.drawContainerVault(
     center: Offset,
-    coreColor: Color,
-    glowColor: Color,
-    alpha: Float,
+    primary: Color,
+    accent: Color,
+    pulseAlpha: Float,
 ) {
-    // Outer glow layers
-    for (i in 3 downTo 1) {
-        val glowRadius = 18f + i * 10f
-        drawCircle(
-            color  = glowColor.copy(alpha = alpha * 0.15f / i),
-            radius = glowRadius,
-            center = center,
-        )
-    }
-    // Core dot
+    val r = size.minDimension / 2f
+    val cx = center.x
+    val cy = center.y
+
+    // Outer Ambient Halo
     drawCircle(
         brush = Brush.radialGradient(
-            colors = listOf(Color.White, coreColor),
+            colors = listOf(primary.copy(alpha = 0.25f * pulseAlpha), Color.Transparent),
             center = center,
-            radius = 10f,
+            radius = r * 1.3f
         ),
-        radius = 10f,
-        center = center,
+        radius = r * 1.3f,
+        center = center
+    )
+
+    // Isometric Hull Coordinates
+    val top = Offset(cx, cy - r * 0.75f)
+    val right = Offset(cx + r * 0.7f, cy - r * 0.35f)
+    val left = Offset(cx - r * 0.7f, cy - r * 0.35f)
+    val centerNode = Offset(cx, cy + r * 0.05f)
+    val bottom = Offset(cx, cy + r * 0.85f)
+    val bLeft = Offset(cx - r * 0.7f, cy + r * 0.45f)
+    val bRight = Offset(cx + r * 0.7f, cy + r * 0.45f)
+
+    // Top Face
+    val topPath = androidx.compose.ui.graphics.Path().apply {
+        moveTo(top.x, top.y)
+        lineTo(right.x, right.y)
+        lineTo(centerNode.x, centerNode.y)
+        lineTo(left.x, left.y)
+        close()
+    }
+    drawPath(topPath, color = Color(0xFF1E293B).copy(alpha = 0.95f))
+    drawPath(topPath, color = primary.copy(alpha = 0.8f), style = Stroke(width = 2f))
+
+    // Left Face
+    val leftPath = androidx.compose.ui.graphics.Path().apply {
+        moveTo(left.x, left.y)
+        lineTo(centerNode.x, centerNode.y)
+        lineTo(bottom.x, bottom.y)
+        lineTo(bLeft.x, bLeft.y)
+        close()
+    }
+    drawPath(leftPath, color = Color(0xFF0F172A).copy(alpha = 0.95f))
+    drawPath(leftPath, color = primary.copy(alpha = 0.6f), style = Stroke(width = 2f))
+
+    // Right Face
+    val rightPath = androidx.compose.ui.graphics.Path().apply {
+        moveTo(centerNode.x, centerNode.y)
+        lineTo(right.x, right.y)
+        lineTo(bRight.x, bRight.y)
+        lineTo(bottom.x, bottom.y)
+        close()
+    }
+    drawPath(rightPath, color = Color(0xFF0B1120).copy(alpha = 0.95f))
+    drawPath(rightPath, color = accent.copy(alpha = 0.6f), style = Stroke(width = 2f))
+
+    // Inner Glowing Core Node
+    drawCircle(
+        brush = Brush.radialGradient(
+            colors = listOf(Color.White, primary, accent.copy(alpha = 0f)),
+            center = centerNode,
+            radius = r * 0.35f
+        ),
+        radius = r * 0.35f * pulseAlpha,
+        center = centerNode
     )
 }
 

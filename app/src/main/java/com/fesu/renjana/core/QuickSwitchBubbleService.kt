@@ -22,10 +22,6 @@ import android.widget.TextView
 import com.fesu.renjana.R
 import com.fesu.renjana.RenjanaApplication
 import com.fesu.renjana.utils.RenjanaLog
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 
 /**
  * QuickSwitchBubbleService — Floating "Chat Heads" style overlay for quick instance switching.
@@ -69,8 +65,6 @@ class QuickSwitchBubbleService : Service() {
     // ── State ─────────────────────────────────────────────────────────────────
 
     private val handler = Handler(Looper.getMainLooper())
-    private val job = SupervisorJob()
-    private val scope = CoroutineScope(Dispatchers.Main + job)
 
     private lateinit var windowManager: WindowManager
 
@@ -127,7 +121,6 @@ class QuickSwitchBubbleService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        job.cancel()
         removeBubbleFromWindow()
         RenjanaApplication.get().bubbleService = null
         RenjanaLog.i(TAG, "QuickSwitchBubbleService destroyed")
@@ -251,15 +244,15 @@ class QuickSwitchBubbleService : Service() {
         if (isExpanded) return
         isExpanded = true
 
-        val instances = getRunningInstances()
-        if (instances.isEmpty()) {
+        val apps = getRunningApps()
+        if (apps.isEmpty()) {
             // Nothing to show — auto-dismiss
             stopSelf()
             return
         }
 
         val density = resources.displayMetrics.density
-        val panelWidthPx = (220 * density).toInt()
+        val panelWidthPx = (240 * density).toInt()
         val itemHeightPx = (52 * density).toInt()
         val radiusPx = (PANEL_RADIUS_DP * density)
 
@@ -287,7 +280,7 @@ class QuickSwitchBubbleService : Service() {
 
             // Header label
             addView(TextView(this@QuickSwitchBubbleService).apply {
-                text = "Running Instances"
+                text = "Running Apps"
                 setTextColor(0xFFBBBBCC.toInt())
                 textSize = 11f
                 setPadding(
@@ -296,10 +289,9 @@ class QuickSwitchBubbleService : Service() {
                 )
             })
 
-            // Instance rows
-            instances.forEach { running ->
-                val row = buildInstanceRow(running, itemHeightPx, density)
-                addView(row)
+            // Per-app rows
+            apps.forEach { app ->
+                addView(buildAppRow(app, itemHeightPx, density))
             }
         }
 
@@ -321,8 +313,8 @@ class QuickSwitchBubbleService : Service() {
         windowManager.updateViewLayout(rootView, params)
     }
 
-    private fun buildInstanceRow(
-        running: RunningInstance,
+    private fun buildAppRow(
+        app: AppRuntimeRegistry.RunningApp,
         heightPx: Int,
         density: Float
     ): View {
@@ -334,7 +326,7 @@ class QuickSwitchBubbleService : Service() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(
                 (12 * density).toInt(), 0,
-                (12 * density).toInt(), 0
+                (8 * density).toInt(), 0
             )
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
@@ -348,12 +340,11 @@ class QuickSwitchBubbleService : Service() {
                 layoutParams = LinearLayout.LayoutParams(iconSizePx, iconSizePx)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
-                    // Deterministic colour from packageName hash
-                    val hue = (running.packageName.hashCode() and 0xFFFFFF) % 360
+                    val hue = (app.packageName.hashCode() and 0xFFFFFF) % 360
                     setColor(Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.6f, 0.8f)))
                 }
                 addView(TextView(this@QuickSwitchBubbleService).apply {
-                    text = running.appName.firstOrNull()?.uppercase() ?: "?"
+                    text = app.appName.firstOrNull()?.uppercase() ?: "?"
                     setTextColor(Color.WHITE)
                     textSize = 14f
                     gravity = Gravity.CENTER
@@ -365,41 +356,49 @@ class QuickSwitchBubbleService : Service() {
             }
             addView(iconView)
 
-            // Instance name + status
+            // App name + running duration
             val textCol = LinearLayout(this@QuickSwitchBubbleService).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 setPadding((10 * density).toInt(), 0, 0, 0)
 
                 addView(TextView(this@QuickSwitchBubbleService).apply {
-                    text = running.appName
+                    text = app.appName
                     setTextColor(Color.WHITE)
                     textSize = 13f
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 })
                 addView(TextView(this@QuickSwitchBubbleService).apply {
-                    text = running.state.name.lowercase()
-                        .replaceFirstChar { it.uppercase() }
-                    setTextColor(
-                        when (running.state) {
-                            InstanceState.RUNNING -> 0xFF4CAF50.toInt()
-                            InstanceState.PAUSED  -> 0xFFFFB74D.toInt()
-                            else                  -> 0xFF9E9E9E.toInt()
-                        }
-                    )
+                    val mins = (System.currentTimeMillis() - app.startedAt) / 60_000
+                    text = if (mins < 1) "running · just now" else "running · $mins min"
+                    setTextColor(0xFF4CAF50.toInt())
                     textSize = 11f
                 })
             }
             addView(textCol)
 
-            // Tap to launch
+            // Per-app stop
+            val stopSizePx = (32 * density).toInt()
+            addView(TextView(this@QuickSwitchBubbleService).apply {
+                text = "✕"
+                setTextColor(0xFFEF5350.toInt())
+                textSize = 14f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(stopSizePx, stopSizePx)
+                setOnClickListener {
+                    collapsePanel()
+                    AppRuntimeRegistry.closeApp(this@QuickSwitchBubbleService, app)
+                    refreshPanelSoon()
+                }
+            })
+
+            // Tap → bring the running task to the front (NOT a fresh launch)
             setOnClickListener {
                 collapsePanel()
-                launchInstance(running.instanceId)
+                AppRuntimeRegistry.openApp(this@QuickSwitchBubbleService, app)
             }
 
-            // Highlight on press
             isClickable = true
             isFocusable = true
         }
@@ -407,24 +406,19 @@ class QuickSwitchBubbleService : Service() {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    /** Pull running instances directly from InstanceLifecycleService via application reference. */
-    private fun getRunningInstances(): List<RunningInstance> {
+    /** Live per-app runtime state from the registry (reconciled with processes). */
+    private fun getRunningApps(): List<AppRuntimeRegistry.RunningApp> {
         return try {
-            RenjanaApplication.get().lifecycleService?.getRunningInstances() ?: emptyList()
+            AppRuntimeRegistry.refresh()
+            AppRuntimeRegistry.runningApps.value.toList()
         } catch (e: Throwable) {
-            RenjanaLog.w(TAG, "Could not read running instances: ${e.message}")
+            RenjanaLog.w(TAG, "Could not read running apps: ${e.message}")
             emptyList()
         }
     }
 
-    private fun launchInstance(instanceId: String) {
-        scope.launch {
-            try {
-                RenjanaApplication.get().instanceLauncher.launchInstance(instanceId)
-            } catch (e: Throwable) {
-                RenjanaLog.e(TAG, "Failed to launch instance $instanceId from bubble: ${e.message}")
-            }
-        }
+    private fun refreshPanelSoon() {
+        handler.postDelayed({ refreshPanel() }, 300)
     }
 
     /** Called by InstanceLifecycleService whenever the running set changes. */

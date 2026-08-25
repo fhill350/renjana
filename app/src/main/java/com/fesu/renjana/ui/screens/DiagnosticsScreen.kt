@@ -343,6 +343,7 @@ private fun CanvasFingerprintSection(config: InstanceConfig) {
             )
         }
     }
+    Spacer(modifier = Modifier.height(32.dp))
 }
 
 // ---------------------------------------------------------------------------

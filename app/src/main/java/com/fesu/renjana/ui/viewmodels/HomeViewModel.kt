@@ -31,8 +31,20 @@ class HomeViewModel : ViewModel() {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** Live per-app runtime state, reconciled against running processes. */
+    val runningApps: StateFlow<Set<com.fesu.renjana.core.AppRuntimeRegistry.RunningApp>> =
+        com.fesu.renjana.core.AppRuntimeRegistry.runningApps
+
     init {
         loadInstances()
+        // Keep running badges truthful (guest processes dying on their own,
+        // apps started from inside other guest apps, etc.)
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000)
+                com.fesu.renjana.core.AppRuntimeRegistry.refresh()
+            }
+        }
     }
 
     private fun loadInstances() {

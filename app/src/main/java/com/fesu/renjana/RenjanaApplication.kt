@@ -71,6 +71,10 @@ class RenjanaApplication : Application() {
         // Install crash handler FIRST — must catch any exception during init
         com.fesu.renjana.core.CrashHandler.install(this)
 
+        try {
+            androidx.appcompat.app.AppCompatDelegate.setCompatVectorFromResourcesEnabled(true)
+        } catch (_: Throwable) {}
+
         // Initialize Pine hook framework (non-root virtualization)
         val pineReady = com.fesu.renjana.hooks.PineHookManager.initialize()
         RenjanaLog.i(TAG, "Pine hook framework: ${if (pineReady) "READY" else "UNAVAILABLE (fallback mode)"}")
@@ -80,6 +84,10 @@ class RenjanaApplication : Application() {
         // PackageInfo/Resources are never populated.
         com.fesu.renjana.virtual.GuestInfoCache.initialize(this)
         RenjanaLog.i(TAG, "GuestInfoCache initialized")
+
+        // Initialize DeviceFingerprint
+        com.fesu.renjana.hooks.DeviceFingerprint.initialize(this)
+        RenjanaLog.i(TAG, "DeviceFingerprint initialized")
 
         // Initialize the GoogleSignInVirtualizer singleton early so that any later
         // GoogleSignInVirtualizer.get() call (e.g. from hooks) finds it ready,

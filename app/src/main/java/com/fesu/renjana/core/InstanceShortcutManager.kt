@@ -31,7 +31,7 @@ object InstanceShortcutManager {
     fun requestPinShortcut(context: Context, instance: Instance): Boolean {
         if (!ShortcutManagerCompat.isRequestPinShortcutSupported(context)) return false
 
-        val icon = buildIcon(context, instance.packageName)
+        val icon = buildIcon(context, instance)
 
         val launchIntent = Intent(context, InstanceLaunchActivity::class.java).apply {
             action = Intent.ACTION_MAIN
@@ -55,7 +55,7 @@ object InstanceShortcutManager {
      * Only updates dynamic/pinned shortcuts that are still accessible via the API.
      */
     fun updateShortcut(context: Context, instance: Instance) {
-        val icon = buildIcon(context, instance.packageName)
+        val icon = buildIcon(context, instance)
 
         val launchIntent = Intent(context, InstanceLaunchActivity::class.java).apply {
             action = Intent.ACTION_MAIN
@@ -101,20 +101,95 @@ object InstanceShortcutManager {
     // ── Icon helpers ──────────────────────────────────────────────────────────
 
     /**
-     * Build an IconCompat from the guest app's launcher icon.
-     * Falls back to ic_launcher if the package is not installed or icon load fails.
+     * Build an IconCompat from the guest app's launcher icon with a masked container badge overlay.
      */
-    private fun buildIcon(context: Context, packageName: String): IconCompat {
+    private fun buildIcon(context: Context, instance: Instance): IconCompat {
         return try {
             val pm = context.packageManager
-            val drawable = pm.getApplicationIcon(packageName)
-            val bitmap = drawableToBitmap(drawable)
-            IconCompat.createWithBitmap(bitmap)
-        } catch (e: PackageManager.NameNotFoundException) {
-            IconCompat.createWithResource(context, R.mipmap.ic_launcher)
+            val drawable = pm.getApplicationIcon(instance.packageName)
+            val baseBitmap = drawableToBitmap(drawable)
+            val badgedBitmap = addContainerBadge(baseBitmap, instance)
+            IconCompat.createWithBitmap(badgedBitmap)
         } catch (e: Exception) {
             IconCompat.createWithResource(context, R.mipmap.ic_launcher)
         }
+    }
+
+    private fun addContainerBadge(base: Bitmap, instance: Instance): Bitmap {
+        val output = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.drawBitmap(base, 0f, 0f, null)
+
+        val size = base.width.toFloat()
+        val badgeSize = size * 0.40f
+        val badgeLeft = size - badgeSize - (size * 0.04f)
+        val badgeTop = size - badgeSize - (size * 0.04f)
+        val badgeRight = badgeLeft + badgeSize
+        val badgeBottom = badgeTop + badgeSize
+
+        val accentColor = try {
+            instance.config.instanceColor?.let { android.graphics.Color.parseColor(it) }
+                ?: android.graphics.Color.parseColor("#38BDF8")
+        } catch (_: Exception) {
+            android.graphics.Color.parseColor("#38BDF8")
+        }
+
+        // Draw dark badge background
+        val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#E60B1120")
+            style = android.graphics.Paint.Style.FILL
+        }
+        val cornerRadius = badgeSize * 0.28f
+        val rect = android.graphics.RectF(badgeLeft, badgeTop, badgeRight, badgeBottom)
+        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, bgPaint)
+
+        // Draw border with accent color
+        val borderPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = accentColor
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = (size * 0.025f).coerceAtLeast(2f)
+        }
+        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint)
+
+        // Draw isometric container vault symbol inside badge
+        val iconPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = accentColor
+            style = android.graphics.Paint.Style.FILL
+        }
+        val cx = badgeLeft + badgeSize / 2f
+        val cy = badgeTop + badgeSize / 2f
+        val r = badgeSize * 0.28f
+
+        val path = android.graphics.Path().apply {
+            moveTo(cx, cy - r * 0.7f)
+            lineTo(cx + r * 0.7f, cy - r * 0.3f)
+            lineTo(cx, cy + r * 0.1f)
+            lineTo(cx - r * 0.7f, cy - r * 0.3f)
+            close()
+        }
+        canvas.drawPath(path, iconPaint)
+
+        val pathLeft = android.graphics.Path().apply {
+            moveTo(cx - r * 0.7f, cy - r * 0.3f)
+            lineTo(cx, cy + r * 0.1f)
+            lineTo(cx, cy + r * 0.75f)
+            lineTo(cx - r * 0.7f, cy + r * 0.35f)
+            close()
+        }
+        iconPaint.alpha = 180
+        canvas.drawPath(pathLeft, iconPaint)
+
+        val pathRight = android.graphics.Path().apply {
+            moveTo(cx, cy + r * 0.1f)
+            lineTo(cx + r * 0.7f, cy - r * 0.3f)
+            lineTo(cx + r * 0.7f, cy + r * 0.35f)
+            lineTo(cx, cy + r * 0.75f)
+            close()
+        }
+        iconPaint.alpha = 120
+        canvas.drawPath(pathRight, iconPaint)
+
+        return output
     }
 
     private fun drawableToBitmap(drawable: android.graphics.drawable.Drawable): Bitmap {

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-26
+
+### 🚀 Major Feature & Stability Release: Multi-App Instances & Android 14/15 Hardening
+
+#### ✨ Added
+
+**Multi-App per Instance Architecture**
+- **Instance Apps Database Entity**: Added `instance_apps` Room table to support multiple installed apps inside a single virtual instance container (`InstanceAppEntity`).
+- **Multi-App Activity Task Stack**: Partitioned `ActivityStubManager.instanceStacks` with composite keys (`stackKey(instanceId, packageName)`), allowing multiple apps within the same instance to maintain independent activity task stacks and respect standard Android launch modes (`standard`, `singleTop`, `singleTask`, `singleInstance`).
+- **Per-App Data & Storage Isolation**: Completely sandboxed app filesystem paths in `StubActivity` and `VirtualContext` to `/instances/<instanceId>/packages/<packageName>/` for `files/`, `databases/`, `shared_prefs/`, `cache/`, `code_cache/`, and `dex_opt/`, eliminating database, preference, and ODEX collisions.
+- **Independent App Runtime Tracking**: Extended `AppRuntimeRegistry` and `InstanceLifecycleService` to track and control app lifecycles via `"$instanceId/$packageName"` keys, including per-app launch, stop, and process reconciliation.
+
+**Split APK & Multi-Dex Engine**
+- **Full Split APK (App Bundle) Support**: Implemented `resolveAllApkPaths()` in `ApkLoader` and `VirtualClassLoader` to automatically locate and load all split APK siblings (`split_config.arm64_v8a.apk`, `split_config.xxhdpi.apk`, `split_config.in.apk`), supporting modern Google Play App Bundles seamlessly.
+- **Framework-Res Integration**: Integrated host framework resources with `PackageManager.getResourcesForApplication()` to ensure full asset availability across both guest and system themes.
+
+**GMS & Firebase Dynamic Sandboxing**
+- **Dynamic UID Spoofing for GMS Client**: Propagated active guest package names (`effectivePackage`) to `PineHookManager` and `CoreHooks.createGetApplicationInfoHook()`, spoofing `ApplicationInfo.uid` to match the container process UID and resolving `SecurityException: Unknown calling package name` in Firebase Analytics, Google Ads, and GMS Dynamite.
+- **GMS Unavailability Fallback**: Enhanced GMS availability hooks (`isGooglePlayServicesAvailable`) and `ContextImpl.bindService` blocking hooks to allow Firebase and GMS-dependent apps to fall back cleanly to direct HTTPS protocols when GMS virtualization is disabled.
+
+**User Interface & Experience**
+- **Multi-App Instance Cards**: Redesigned Home screen cards with a 2x2 mini app icon grid for multi-app containers and combined title/subtitle displays.
+- **Instance Detail "Apps" Tab**: Added dedicated Apps management tab in `InstanceDetailScreen` featuring individual app launch buttons (▶ Play), stop/delete controls, and an "Add App" clone sheet.
+- **Virtual Container Floating Overlay**: Added interactive floating action overlay providing quick access to container tools and navigation while guest applications are running.
+- **PROBLEM.md Technical Log**: Created structured post-mortem documentation detailing 9 major virtualization hurdles, root causes, and applied engineering solutions.
+
+#### 🐛 Fixed
+
+- **`VectorDrawableCompat` Crash**: Bypassed strict AppCompat vector drawable verification across both host and guest classloaders using `AppCompatDelegate.setCompatVectorFromResourcesEnabled(true)`, reflection on `ResourceManagerInternal.mHasCheckedVectorDrawableSetup`, and Pine method hooks.
+- **Android 14/15 `ActivityInfo.parentActivityName` NPE**: Cloned and injected valid `ActivityInfo` into guest `Activity.mActivityInfo` to prevent null-pointer crashes during `Activity.onCreate()`.
+- **`ComponentActivity.getViewModelStore` / `Activity.attach` Order**: Reordered parameter type evaluation in `Activity.attach` reflection so container `Application` instances are passed accurately instead of generic `Context`.
+- **`AppCompatDelegateImpl` Manifest Lookups**: Redirected guest activity component names to valid registered `StubActivity` components and added Pine fallback hooks on `PackageManager.getActivityInfo()`.
+- **Layout XML Resource Inflation**: Overrode `StubActivity.getTheme()` and `StubActivity.setTheme()` to bind directly to `virtualClassLoader.getResources().newTheme()`, preventing `Resources$NotFoundException` when inflating XML drawables.
+- **`SuperNotCalledException` on Guest Finish**: Ensured `super.onCreate(savedInstanceState)` is called unconditionally at the start of `StubActivity.onCreate()`, fixing lifecycle contract violations during `ACTION_FINISH_GUEST`.
+- **Directory Creation Race Condition**: Fixed `VirtualContext.ensureDir()` concurrency checks to avoid false warning logs when multiple background worker threads initialize directories simultaneously.
+
+---
+
 ## [0.1.0] - 2026-06-18
 
 ### 🎉 Initial Release
@@ -105,7 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Release Date | Status |
 |---------|--------------|--------|
-| 0.1.0   | 2026-06-18   | ✅ Current |
+| 0.2.0   | 2026-08-26   | ✅ Current |
+| 0.1.0   | 2026-06-18   | 📦 Previous |
 
 ---
 
@@ -113,7 +152,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Future Versions
 
-Plans for versions beyond v0.1.0 will be announced later. Bug fixes and patches will be released as needed.
+Plans for versions beyond v0.2.0 will be announced later. Bug fixes and patches will be released as needed.
 
 ---
 
